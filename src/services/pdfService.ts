@@ -35,122 +35,21 @@ const getAI = () => {
   return ai;
 };
 
-import zlib from "node:zlib";
-import { promisify } from "node:util";
-
-const inflateRaw = promisify(zlib.inflateRaw);
-const inflate    = promisify(zlib.inflate);
-
-function decodePDFString(s: string): string {
-  return s
-    .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)))
-    .replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t")
-    .replace(/\\\\/g, "\\").replace(/\\([()\\])/g, "$1");
-}
-
 /**
- * Extract text from PDF buffer using raw stream parsing + zlib decompression.
- * Zero external dependencies — works in any Node.js environment including Vercel serverless.
- *
- * Key design decisions to avoid 504 timeouts:
- *  1. Buffer.indexOf() instead of regex on binary data — no backtracking
- *  2. "stream" is only valid when preceded by \n or \r (avoids "endstream" false match)
- *  3. Regex runs only on decompressed content streams that contain PDF text operators
- *  4. Each stream processed individually — never one giant combined string
+ * Extract text from a PDF buffer.
+ * Uses pdf-parse v1.1.1 which bundles its own pdfjs and works in any
+ * Node.js environment including Vercel serverless (no native modules, no web worker).
  */
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
   try {
-    const texts: string[] = [];
-
-    const STREAM    = Buffer.from("stream");
-    const ENDSTREAM = Buffer.from("endstream");
-    let pos = 0;
-
-    while (pos < buffer.length) {
-      const streamStart = buffer.indexOf(STREAM, pos);
-      if (streamStart === -1) break;
-
-      // "stream" must be at the start of a line (PDF spec).
-      // This also prevents matching "stream" inside "endstream".
-      const prevByte = streamStart > 0 ? buffer[streamStart - 1] : 0x0a;
-      if (prevByte !== 0x0a && prevByte !== 0x0d) {
-        pos = streamStart + STREAM.length;
-        continue;
-      }
-
-      // Skip past "stream" keyword + optional \r\n
-      let dataStart = streamStart + STREAM.length;
-      if (buffer[dataStart] === 0x0d) dataStart++; // \r
-      if (buffer[dataStart] === 0x0a) dataStart++; // \n
-
-      const endStart = buffer.indexOf(ENDSTREAM, dataStart);
-      if (endStart === -1) break;
-
-      // Trim trailing \r\n before "endstream"
-      let dataEnd = endStart;
-      if (dataEnd > dataStart && buffer[dataEnd - 1] === 0x0a) dataEnd--;
-      if (dataEnd > dataStart && buffer[dataEnd - 1] === 0x0d) dataEnd--;
-
-      const streamData = buffer.slice(dataStart, dataEnd);
-      pos = endStart + ENDSTREAM.length;
-
-      // ── Try to decompress (FlateDecode / zlib) ──────────────────────────
-      let streamText: string | null = null;
-      for (const fn of [inflate, inflateRaw]) {
-        try {
-          const dec = await fn(streamData);
-          streamText = dec.toString("latin1");
-          break;
-        } catch { /* not a compressed stream */ }
-      }
-
-      if (streamText === null) {
-        // Uncompressed stream: only include if it looks like a PDF content stream.
-        // This avoids running regex on binary image/font data.
-        const raw = streamData.toString("latin1");
-        if (hasPDFTextOps(raw)) streamText = raw;
-      }
-
-      // Only extract text from streams that have PDF text operators (BT/Tj/TJ)
-      if (streamText !== null && hasPDFTextOps(streamText)) {
-        extractStreamText(streamText, texts);
-      }
-    }
-
-    const result = texts.join(" ");
-    if (!result.trim()) throw new Error("No text extracted from PDF");
-    return result;
-  } catch (error) {
-    console.error("PDF parsing error:", error);
+    // Dynamic import keeps it out of the Vite client bundle
+    const pdfParse = (await import("pdf-parse")).default;
+    const data = await pdfParse(buffer);
+    if (!data?.text?.trim()) throw new Error("No text extracted from PDF");
+    return data.text;
+  } catch (error: any) {
+    console.error("PDF parsing error:", error?.message ?? error);
     throw new Error("Failed to parse PDF content");
-  }
-}
-
-/** Quick check: does this string look like a PDF content stream with text? */
-function hasPDFTextOps(s: string): boolean {
-  return /\)\s*(?:Tj|TJ)|BT\b/.test(s);
-}
-
-/** Extract all PDF string literals that end with Tj/TJ operators from one stream. */
-function extractStreamText(content: string, out: string[]): void {
-  let m: RegExpExecArray | null;
-
-  // (text)Tj  /  (text)'  /  (text)"
-  const tjRx = /\(([^)\\]*(?:\\[\s\S][^)\\]*)*)\)\s*(?:Tj|'|")/g;
-  while ((m = tjRx.exec(content)) !== null) {
-    const t = decodePDFString(m[1]).trim();
-    if (t) out.push(t);
-  }
-
-  // [(text1)(text2)...]TJ
-  const tjArrRx = /\[((?:[^\]]*\([^)]*\)[^\]]*)*)\]\s*TJ/g;
-  while ((m = tjArrRx.exec(content)) !== null) {
-    const strRx = /\(([^)\\]*(?:\\[\s\S][^)\\]*)*)\)/g;
-    let s: RegExpExecArray | null;
-    while ((s = strRx.exec(m[1])) !== null) {
-      const t = decodePDFString(s[1]).trim();
-      if (t) out.push(t);
-    }
   }
 }
 
