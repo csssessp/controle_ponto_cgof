@@ -868,26 +868,28 @@ export async function createApp() {
         try {
           const { name, registration, cpf, department, records } = empData as any;
 
-          // find or create employee
+          // ── Find or create employee ─────────────────────────────────────
           let { data: found } = await supabase
             .from("employees")
             .select("id")
-            .eq("registration", registration)
+            .eq("registration", String(registration).trim())
             .limit(1);
           let employeeId: string;
           if (found?.[0]) {
             employeeId = found[0].id;
           } else {
-            const { data: created, error } = await supabase
+            const { data: created, error: createErr } = await supabase
               .from("employees")
-              .insert([{ name, registration, cpf: cpf || null, organization_id: orgId, role_title: "Colaborador" }])
+              .insert([{ name, registration: String(registration).trim(), cpf: cpf || null, organization_id: orgId, role_title: "Colaborador" }])
               .select("id");
-            if (error) throw error;
+            if (createErr) throw createErr;
             employeeId = created![0].id;
           }
 
           const sched = await getEmpSchedule(employeeId);
           let savedRecords = 0;
+          let skippedRecords = 0;
+
           for (const rec of records || []) {
             if (!rec.date) continue;
             const isoDate = parseToISO(rec.date);
@@ -897,28 +899,53 @@ export async function createApp() {
               ? calculateWorkHours(rec.entries, sched.expected, sched.lunch)
               : { totalWorkMinutes: 0, overtime50Minutes: 0, overtime100Minutes: 0, nightShiftMinutes: 0, delayMinutes: 0 };
 
-            const { data: upserted, error: uErr } = await supabase
+            const recordPayload = {
+              employee_id: employeeId,
+              date: isoDate,
+              status: rec.status || "NORMAL",
+              justification: rec.justification || null,
+              total_work: hours.totalWorkMinutes,
+              overtime50: hours.overtime50Minutes,
+              overtime100: hours.overtime100Minutes,
+              night_shift: hours.nightShiftMinutes,
+              delay: hours.delayMinutes,
+              updated_at: new Date().toISOString(),
+            };
+
+            // ── Dedup: check if record already exists for this employee+date ──
+            const { data: existing } = await supabase
               .from("attendance_records")
-              .upsert({
-                employee_id: employeeId,
-                date: isoDate,
-                status: rec.status || "NORMAL",
-                justification: rec.justification || null,
-                total_work: hours.totalWorkMinutes,
-                overtime50: hours.overtime50Minutes,
-                overtime100: hours.overtime100Minutes,
-                night_shift: hours.nightShiftMinutes,
-                delay: hours.delayMinutes,
-                updated_at: new Date().toISOString(),
-              }, { onConflict: "employee_id,date" })
-              .select("id");
-            if (uErr) { console.error("record upsert:", uErr.message); continue; }
-            const recordId = upserted![0].id;
+              .select("id")
+              .eq("employee_id", employeeId)
+              .eq("date", isoDate)
+              .limit(1);
+
+            let recordId: string;
+
+            if (existing?.[0]) {
+              // Record exists → update it (merge, don't skip)
+              recordId = existing[0].id;
+              await supabase
+                .from("attendance_records")
+                .update(recordPayload)
+                .eq("id", recordId);
+            } else {
+              // New record → insert
+              const { data: inserted, error: insErr } = await supabase
+                .from("attendance_records")
+                .insert([recordPayload])
+                .select("id");
+              if (insErr) { console.error("record insert:", insErr.message); continue; }
+              recordId = inserted![0].id;
+            }
+
             savedRecords++;
 
+            // ── Merge time entries: replace only if new PDF has entries ──
             if (rec.entries?.length) {
+              // Delete old entries for this record and replace with new ones
               await supabase.from("time_entries").delete().eq("record_id", recordId);
-              const rows = (rec.entries as any[]).map((e) => ({
+              const rows = (rec.entries as any[]).map((e: any) => ({
                 record_id: recordId,
                 time: `${isoDate}T${e.time}:00`,
                 type: e.type,
@@ -928,7 +955,7 @@ export async function createApp() {
             }
           }
 
-          results.push({ employeeId, name, registration, savedRecords });
+          results.push({ employeeId, name, registration, savedRecords, skippedRecords });
         } catch (err: any) {
           results.push({ error: err.message, name: empData?.name });
         }

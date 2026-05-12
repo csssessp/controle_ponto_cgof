@@ -40,10 +40,11 @@ const getAI = () => {
  */
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
   try {
-    const { PDFParse } = await import("pdf-parse");
-    const parser = new PDFParse({ data: buffer });
-    const result = await parser.getText();
-    return result.text || "";
+    const pdfParse = await import("pdf-parse");
+    const fn: (buf: Buffer) => Promise<{ text: string }> =
+      (pdfParse as any).default ?? (pdfParse as any);
+    const data = await fn(buffer);
+    return data.text || "";
   } catch (error) {
     console.error("PDF parsing error:", error);
     throw new Error("Failed to parse PDF content");
