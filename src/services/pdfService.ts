@@ -36,25 +36,57 @@ const getAI = () => {
 };
 
 /**
- * Extract text from a PDF buffer.
+ * Extract text from a PDF buffer preserving line structure.
  *
- * Uses `unpdf` — built specifically for serverless/edge environments:
- *  - Bundles pdfjs-dist with no web worker required
- *  - Zero native modules / no C++ addons
- *  - Works in Node.js, Vercel, AWS Lambda, Deno, Bun, browsers
- *
- * Buffer must be converted to Uint8Array because pdfjs rejects Buffer instances.
+ * Uses `unpdf`'s getDocumentProxy for serverless-safe pdfjs loading
+ * (no web worker, no native modules), then reconstructs lines using
+ * Y-coordinate comparison — identical to what pdf-parse v1 did and
+ * what the DIMEP table-PDF parser expects.
  */
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
   try {
-    const { extractText } = await import("unpdf");
+    const { getDocumentProxy } = await import("unpdf");
 
-    // pdfjs requires Uint8Array, not Buffer (even though Buffer extends Uint8Array)
-    const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    // Uint8Array copy — avoids shared-buffer offset issues with Node.js Buffer slices
+    const uint8 = new Uint8Array(buffer);
+    const pdf = await getDocumentProxy(uint8);
 
-    const { text } = await extractText(uint8, { mergePages: true });
-    const result = Array.isArray(text) ? text.join("\n") : String(text ?? "");
+    const pageTexts: string[] = [];
 
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const { items } = await page.getTextContent();
+
+      let lastY: number | null = null;
+      let text = "";
+
+      for (const item of items) {
+        // pdfjs also yields MarkedContent objects that have no `str`
+        if (!("str" in item) || !item.str) continue;
+
+        const y: number = (item as any).transform[5];
+
+        if (lastY !== null && Math.abs(y - lastY) > 1) {
+          // Different vertical position → new line
+          text += "\n";
+        } else if (
+          lastY !== null &&
+          text.length > 0 &&
+          !text.endsWith(" ") &&
+          !item.str.startsWith(" ")
+        ) {
+          // Same line but adjacent items with no space
+          text += " ";
+        }
+
+        text += item.str;
+        lastY = y;
+      }
+
+      pageTexts.push(text);
+    }
+
+    const result = pageTexts.join("\n");
     if (!result.trim()) throw new Error("No text extracted from PDF");
     return result;
   } catch (error: any) {
