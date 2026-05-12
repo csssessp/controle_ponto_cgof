@@ -1,0 +1,194 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  ADMIN
+  RH
+  MANAGER
+  EMPLOYEE
+}
+
+model Organization {
+  id          String       @id @default(uuid())
+  name        String
+  cnpj        String?      @unique
+  address     String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  departments Department[]
+  employees   Employee[]
+  holidays    Holiday[]
+  users       User[]
+}
+
+model User {
+  id             String       @id @default(uuid())
+  email          String       @unique
+  role           UserRole     @default(EMPLOYEE)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  employeeId     String?      @unique
+  employee       Employee?    @relation(fields: [employeeId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model Department {
+  id             String       @id @default(uuid())
+  name           String
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  employees      Employee[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model Employee {
+  id               String            @id @default(uuid())
+  registration     String            @unique // Matrícula
+  name             String
+  cpf              String?           @unique
+  email            String?
+  phone            String?
+  roleTitle        String?           @default("Colaborador")
+  admissionDate    DateTime?
+  organizationId   String
+  organization     Organization      @relation(fields: [organizationId], references: [id])
+  departmentId     String?
+  department       Department?       @relation(fields: [departmentId], references: [id])
+  scheduleId       String?
+  schedule         Schedule?         @relation(fields: [scheduleId], references: [id])
+  managerId        String?
+  manager          Employee?         @relation("DepartmentManager", fields: [managerId], references: [id])
+  subordinates     Employee[]        @relation("DepartmentManager")
+  user             User?
+  attendanceRecords AttendanceRecord[]
+  timeBankEntries  TimeBankEntry[]
+  absences         Absence[]
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+}
+
+model Schedule {
+  id             String     @id @default(uuid())
+  name           String     // e.g., "Comercial 44h"
+  description    String?
+  expectedWork   Int        @default(480) // Expected daily minutes
+  startTime      String?    @default("08:00")
+  endTime        String?    @default("17:00")
+  intervalStart  String?    @default("12:00")
+  intervalEnd    String?    @default("13:00")
+  workDays       Int[]      @default([1, 2, 3, 4, 5]) // 0-6 (Sun-Sat)
+  tolerance      Int        @default(10) // Tolerance minutes
+  employees      Employee[]
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+}
+
+model AttendanceRecord {
+  id           String      @id @default(uuid())
+  employeeId   String
+  employee     Employee    @relation(fields: [employeeId], references: [id])
+  date         DateTime
+  entries      TimeEntry[]
+  totalWork    Int         @default(0) // Total worked minutes
+  overtime50   Int         @default(0) // Overtime 50% minutes
+  overtime100  Int         @default(0) // Overtime 100% minutes
+  nightShift   Int         @default(0) // Night shift minutes
+  delay        Int         @default(0) // Delay minutes
+  status       RecordStatus @default(NORMAL)
+  justification String?
+  isApproved   Boolean     @default(false)
+  approvedBy   String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@unique([employeeId, date])
+}
+
+model TimeEntry {
+  id         String           @id @default(uuid())
+  recordId   String
+  record     AttendanceRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  time       DateTime
+  type       EntryType        @default(IN) // IN, OUT
+  original   String?          // Original string from PDF if manual edit
+  isManual   Boolean          @default(false)
+  createdAt  DateTime         @default(now())
+}
+
+enum RecordStatus {
+  NORMAL
+  ABSENCE
+  VACATION
+  HOLIDAY
+  CERTIFICATE
+  OFF_DAY
+  COMPENSATION
+}
+
+enum EntryType {
+  IN
+  OUT
+}
+
+model TimeBankEntry {
+  id         String   @id @default(uuid())
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  date       DateTime
+  minutes    Int      // Positive for credit, negative for debit
+  type       String   // "OVERTIME", "COMPENSATION", "ABSENCE"
+  description String?
+  createdAt  DateTime @default(now())
+}
+
+model Absence {
+  id         String   @id @default(uuid())
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  startDate  DateTime
+  endDate    DateTime
+  type       String   // "FERIAS", "ATESTEADO", "FALTA"
+  description String?
+  createdAt  DateTime @default(now())
+}
+
+model Holiday {
+  id             String       @id @default(uuid())
+  date           DateTime
+  name           String
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  isNational     Boolean      @default(true)
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String
+  entity    String
+  entityId  String
+  oldValue  Json?
+  newValue  Json?
+  ip        String?
+  createdAt DateTime @default(now())
+}
+
+model Upload {
+  id        String   @id @default(uuid())
+  filename  String
+  url       String
+  status    String   // "PROCESSING", "COMPLETED", "FAILED"
+  result    Json?
+  createdAt DateTime @default(now())
+}

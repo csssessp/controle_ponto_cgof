@@ -1,0 +1,6 @@
+{
+  "name": "Chronos Ponto",
+  "description": "Sistema premium de gestão de jornada de trabalho com IA, processamento automático de PDFs DIMEP e controle de banco de horas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["AI PDF Parsing", "Overtime Engine", "Dashboard Analytics"]
+}
