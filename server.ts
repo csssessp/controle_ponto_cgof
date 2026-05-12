@@ -130,18 +130,15 @@ async function getOrCreateOrg(): Promise<string> {
   return created![0].id;
 }
 
-// ─── Server ───────────────────────────────────────────────────────────────────
+// ─── App factory (shared between local dev server and Vercel handler) ──────────
 
-async function startServer() {
-  // Detect which time-bank table exists in Supabase
+export async function createApp() {
   await detectBankTable();
 
   const app = express();
-  const PORT = parseInt(process.env.PORT || "3000", 10);
-
   app.use(express.json({ limit: "50mb" }));
   app.use(cors());
-  // Serve img folder (brasão, logos)
+  // Serve img folder in local dev (on Vercel, images live in public/)
   app.use("/img", express.static(path.join(process.cwd(), "img")));
 
   // ── Health ────────────────────────────────────────────────────────────────
@@ -1058,7 +1055,15 @@ async function startServer() {
     }
   });
 
-  // ── Vite ──────────────────────────────────────────────────────────────────
+  return app;
+}
+
+// ─── Local dev server (Vite + Express on same port) ───────────────────────────
+
+async function startServer() {
+  const app = await createApp();
+  const PORT = parseInt(process.env.PORT || "3000", 10);
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
