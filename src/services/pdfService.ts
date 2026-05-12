@@ -35,37 +35,66 @@ const getAI = () => {
   return ai;
 };
 
+import zlib from "node:zlib";
+import { promisify } from "node:util";
+
+const inflateRaw = promisify(zlib.inflateRaw);
+const inflate    = promisify(zlib.inflate);
+
+function decodePDFString(s: string): string {
+  return s
+    .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)))
+    .replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t")
+    .replace(/\\\\/g, "\\").replace(/\\([()\\])/g, "$1");
+}
+
 /**
- * Extract text from PDF buffer using pdfjs-dist directly
- * (avoids pdf-parse v2 @napi-rs/canvas native dependency that breaks Vercel)
+ * Extract text from PDF buffer using raw stream parsing + zlib decompression.
+ * Zero external dependencies — works in any Node.js environment including Vercel serverless.
  */
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
   try {
-    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs") as any;
-    // Disable web worker — run in-thread (required for Node.js / serverless)
-    pdfjs.GlobalWorkerOptions.workerSrc = "";
+    const bytes = buffer.toString("latin1");
+    const allContent: string[] = [bytes];
 
-    const loadingTask = pdfjs.getDocument({
-      data: new Uint8Array(buffer),
-      useWorkerFetch: false,
-      isEvalSupported: false,
-      useSystemFonts: true,
-    });
-    const doc = await loadingTask.promise;
-
-    const pages: string[] = [];
-    for (let i = 1; i <= doc.numPages; i++) {
-      const page = await doc.getPage(i);
-      const content = await page.getTextContent();
-      const text = (content.items as any[])
-        .map((item) => ("str" in item ? item.str : ""))
-        .join(" ");
-      pages.push(text);
-      page.cleanup();
+    // Try to decompress every stream block (FlateDecode / zlib)
+    const streamRx = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+    let m: RegExpExecArray | null;
+    while ((m = streamRx.exec(bytes)) !== null) {
+      const raw = Buffer.from(m[1], "latin1");
+      for (const fn of [inflate, inflateRaw] as typeof inflate[]) {
+        try {
+          const dec = await fn(raw);
+          allContent.push(dec.toString("latin1"));
+          break;
+        } catch { /* not this encoding, try next */ }
+      }
     }
-    await doc.destroy();
 
-    return pages.join("\n");
+    const combined = allContent.join("\n");
+    const texts: string[] = [];
+
+    // (text)Tj  /  (text)' / (text)"
+    const tjRx = /\(([^)\\]*(?:\\[\s\S][^)\\]*)*)\)\s*(?:Tj|'|")/g;
+    while ((m = tjRx.exec(combined)) !== null) {
+      const t = decodePDFString(m[1]).trim();
+      if (t) texts.push(t);
+    }
+
+    // [(text)...]TJ
+    const tjArrRx = /\[((?:[^\]]*\([^)]*\)[^\]]*)*)\]\s*TJ/g;
+    while ((m = tjArrRx.exec(combined)) !== null) {
+      const strRx = /\(([^)\\]*(?:\\[\s\S][^)\\]*)*)\)/g;
+      let s: RegExpExecArray | null;
+      while ((s = strRx.exec(m[1])) !== null) {
+        const t = decodePDFString(s[1]).trim();
+        if (t) texts.push(t);
+      }
+    }
+
+    const result = texts.join(" ");
+    if (!result.trim()) throw new Error("No text extracted from PDF");
+    return result;
   } catch (error) {
     console.error("PDF parsing error:", error);
     throw new Error("Failed to parse PDF content");
