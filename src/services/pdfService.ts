@@ -36,15 +36,36 @@ const getAI = () => {
 };
 
 /**
- * Extract text from PDF buffer
+ * Extract text from PDF buffer using pdfjs-dist directly
+ * (avoids pdf-parse v2 @napi-rs/canvas native dependency that breaks Vercel)
  */
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
   try {
-    const pdfParse = await import("pdf-parse");
-    const fn: (buf: Buffer) => Promise<{ text: string }> =
-      (pdfParse as any).default ?? (pdfParse as any);
-    const data = await fn(buffer);
-    return data.text || "";
+    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs") as any;
+    // Disable web worker — run in-thread (required for Node.js / serverless)
+    pdfjs.GlobalWorkerOptions.workerSrc = "";
+
+    const loadingTask = pdfjs.getDocument({
+      data: new Uint8Array(buffer),
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      useSystemFonts: true,
+    });
+    const doc = await loadingTask.promise;
+
+    const pages: string[] = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      const text = (content.items as any[])
+        .map((item) => ("str" in item ? item.str : ""))
+        .join(" ");
+      pages.push(text);
+      page.cleanup();
+    }
+    await doc.destroy();
+
+    return pages.join("\n");
   } catch (error) {
     console.error("PDF parsing error:", error);
     throw new Error("Failed to parse PDF content");

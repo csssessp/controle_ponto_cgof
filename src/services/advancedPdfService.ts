@@ -154,9 +154,8 @@ export async function extractEmployeeDataFromPdfText(
 export async function extractAllEmployeesFromPdf(
   base64Pdf: string
 ): Promise<ExtractedEmployee[]> {
-  const pdfParse = await import("pdf-parse");
+  const { extractTextFromPDF } = await import("./pdfService.js");
   const buffer = Buffer.from(base64Pdf, "base64");
-  const data = await (pdfParse.default || pdfParse)(buffer);
-  const pdfText = data.text || "";
+  const pdfText = await extractTextFromPDF(buffer);
   return extractEmployeeDataFromPdfText(pdfText);
 }
