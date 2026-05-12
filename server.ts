@@ -1096,8 +1096,11 @@ async function startServer() {
   });
 }
 
-console.log("🎬 Starting...");
-startServer().catch((err) => {
-  console.error("❌ Error:", err);
-  process.exit(1);
-});
+// Only start the local dev server when this file is run directly (not imported by Vercel)
+if (process.argv[1] === __filename) {
+  console.log("🎬 Starting...");
+  startServer().catch((err) => {
+    console.error("❌ Error:", err);
+    process.exit(1);
+  });
+}
