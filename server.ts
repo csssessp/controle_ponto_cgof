@@ -1,5 +1,4 @@
 ﻿import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
@@ -7,8 +6,6 @@ import https from "https";
 import dotenv from "dotenv";
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
-import { extractTextFromPDF } from "./src/services/pdfService.js";
-import { extractEmployeeDataFromPdfText } from "./src/services/advancedPdfService.js";
 
 dotenv.config();
 
@@ -843,6 +840,8 @@ export async function createApp() {
 
       console.log("\n📄 Extracting PDF text...");
       const buffer = Buffer.from(base64, "base64");
+      const { extractTextFromPDF } = await import("./src/services/pdfService.js");
+      const { extractEmployeeDataFromPdfText } = await import("./src/services/advancedPdfService.js");
       const pdfText = await extractTextFromPDF(buffer);
       console.log(`✅ Extracted ${pdfText.length} chars`);
 
@@ -1065,6 +1064,7 @@ async function startServer() {
   const PORT = parseInt(process.env.PORT || "3000", 10);
 
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
