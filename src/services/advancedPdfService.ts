@@ -53,28 +53,36 @@ function parseEmployeeBlock(block: string): ExtractedEmployee | null {
 
   const lines = block.split(/[\n\r]+/);
   for (const line of lines) {
-    const dateLineMatch = line.match(/^(\d{2}\/\d{2}\/\d{4})\s+\w{2,3}\s+(.*)/);
+    // Day abbreviations include accented chars (sáb) so use \S instead of \w
+    const dateLineMatch = line.match(/^(\d{2}\/\d{2}\/\d{4})\s+\S{2,5}\s+(.*)/);
     if (!dateLineMatch) continue;
 
     const rawDate = dateLineMatch[1];
     const rest = dateLineMatch[2].trim();
     const date = convertDate(rawDate);
 
+    // ── Strip the "Horário" column (HH:MM - HH:MM with spaces around the dash) ──
+    // This column shows the employee SCHEDULE, not actual clock punches.
+    // Actual apontamentos use no spaces: "09:34-19:20".
+    const restClean = rest.replace(/\d{2}:\d{2}\s+-\s+\d{2}:\d{2}/, "").trim();
+
     let status: EmployeeAttendanceRecord["status"] = "NORMAL";
     let justification: string | undefined = undefined;
     const entries: EmployeeAttendanceRecord["entries"] = [];
 
-    if (/f[eé]rias/i.test(rest)) {
+    if (/f[eé]rias/i.test(restClean)) {
       status = "VACATION";
-    } else if (/feriado/i.test(rest)) {
+    } else if (/feriado/i.test(restClean)) {
       status = "HOLIDAY";
-    } else if (/descanso\s+semanal|dsr/i.test(rest)) {
+    } else if (/descanso\s+semanal|dsr/i.test(restClean)) {
       status = "OFF_DAY";
-    } else if (/falta/i.test(rest)) {
+    } else if (/falta/i.test(restClean)) {
       status = "ABSENCE";
     } else {
-      // Extract time ranges HH:MM-HH:MM
-      const timeRanges = [...rest.matchAll(/(\d{2}:\d{2})-(\d{2}:\d{2})/g)];
+      // Actual apontamentos use no-space dash: "09:34-19:20"
+      // H.Trab / H.E. totals like "09:46 01:11" appear AFTER the apontamentos range
+      // and are ignored once a proper IN-OUT range is found.
+      const timeRanges = [...restClean.matchAll(/(\d{2}:\d{2})-(\d{2}:\d{2})/g)];
 
       if (timeRanges.length > 0) {
         for (const range of timeRanges) {
@@ -82,20 +90,21 @@ function parseEmployeeBlock(block: string): ExtractedEmployee | null {
           entries.push({ time: range[2], type: "OUT" });
         }
       } else {
-        // Fallback: individual times (alternating IN/OUT)
-        const individualTimes = [...rest.matchAll(/\b(\d{2}:\d{2})\b/g)];
-        for (let i = 0; i < individualTimes.length; i++) {
-          entries.push({
-            time: individualTimes[i][1],
-            type: i % 2 === 0 ? "IN" : "OUT",
-          });
+        // Fallback: lone punch (e.g. only "22:56" recorded for a day).
+        // Take only the FIRST time — lone punches don't produce worked hours.
+        const individualTimes = [...restClean.matchAll(/\b(\d{2}:\d{2})\b/g)];
+        if (individualTimes.length > 0) {
+          entries.push({ time: individualTimes[0][1], type: "IN" });
         }
       }
 
       if (entries.length === 0) continue;
 
-      // Extract justification text (ignore time-like patterns and large hour totals)
-      const withoutTimes = rest.replace(/\d{2}:\d{2}(-\d{2}:\d{2})?/g, "").replace(/\d{3}:\d{2}/g, "").trim();
+      // Extract justification (strip times and hour totals like "XXX:YY")
+      const withoutTimes = restClean
+        .replace(/\d{2}:\d{2}(-\d{2}:\d{2})?/g, "")
+        .replace(/\d{3}:\d{2}/g, "")
+        .trim();
       if (withoutTimes.length > 2 && !/^\s*$/.test(withoutTimes)) {
         justification = withoutTimes.replace(/\s+/g, " ").trim();
       }
