@@ -4,7 +4,7 @@ import {
   Building, Clock, Users, Plus, Pencil, Trash2, Save, X,
   Building2, Phone, Mail, MapPin, Hash, Palette, Shield,
   Lock, Zap, ChevronRight, TrendingUp, Activity, Eye, EyeOff,
-  Check, AlertCircle, CalendarDays, FileText, Star,
+  Check, AlertCircle, CalendarDays, FileText, Star, AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,13 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -56,6 +63,7 @@ const SECTIONS = [
   { id: "users",       label: "Usuários",      desc: "Acesso e perfis do sistema",      icon: Users,        status: "" },
   { id: "appearance",  label: "Aparência",     desc: "Cores, tema e preferências",      icon: Palette,      status: "" },
   { id: "permissions", label: "Permissões",    desc: "Controles e níveis de acesso",    icon: Shield,       status: "" },
+  { id: "security",    label: "Segurança",     desc: "Zona de perigo e sessões ativas", icon: Lock,         status: "" },
 ];
 
 export default function Settings() {
@@ -1117,6 +1125,36 @@ function PanelPermissions() {
 
 // ── Segurança ─────────────────────────────────────────────────────────────────
 function PanelSecurity() {
+  const [showPurgeModal, setShowPurgeModal] = useState(false);
+  const [purgeEmail, setPurgeEmail]         = useState("");
+  const [purgePassword, setPurgePassword]   = useState("");
+  const [purgeLoading, setPurgeLoading]     = useState(false);
+  const [showPw, setShowPw]                 = useState(false);
+
+  const handlePurge = async () => {
+    if (!purgeEmail.trim() || !purgePassword) {
+      toast.error("Preencha email e senha");
+      return;
+    }
+    setPurgeLoading(true);
+    try {
+      const r = await fetch("/api/admin/purge-attendance", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: purgeEmail.trim(), password: purgePassword }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      toast.success("Todos os apontamentos foram apagados.");
+      setShowPurgeModal(false);
+      setPurgeEmail(""); setPurgePassword("");
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setPurgeLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 flex items-start gap-3">
@@ -1147,6 +1185,97 @@ function PanelSecurity() {
           </div>
         ))}
       </div>
+
+      {/* Zona de Perigo */}
+      <div className="rounded-2xl border-2 border-red-200 bg-red-50/50 p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-red-600" />
+          <p className="text-sm font-bold text-red-700 uppercase tracking-wide">Zona de Perigo</p>
+        </div>
+        <Separator className="bg-red-200" />
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-red-800">Apagar todos os apontamentos</p>
+            <p className="text-xs text-red-600 mt-0.5">
+              Remove <strong>permanentemente</strong> todos os registros de ponto de todos os funcionários e todos os meses. Esta ação não pode ser desfeita.
+            </p>
+          </div>
+          <Button
+            variant="destructive"
+            size="sm"
+            className="shrink-0 rounded-xl h-8 text-xs gap-1.5"
+            onClick={() => setShowPurgeModal(true)}
+          >
+            <Trash2 className="w-3.5 h-3.5" /> Apagar tudo
+          </Button>
+        </div>
+      </div>
+
+      {/* Modal de confirmação */}
+      <Dialog open={showPurgeModal} onOpenChange={open => { if (!purgeLoading) { setShowPurgeModal(open); if (!open) { setPurgeEmail(""); setPurgePassword(""); } } }}>
+        <DialogContent className="max-w-md rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-700">
+              <AlertTriangle className="w-5 h-5" /> Confirmar exclusão total
+            </DialogTitle>
+            <DialogDescription className="text-xs pt-1">
+              Esta ação apagará <strong>todos os apontamentos</strong> de todos os funcionários permanentemente. Confirme com suas credenciais de administrador.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 pt-2">
+            <div className="space-y-1">
+              <Label className="text-xs">E-mail do administrador</Label>
+              <Input
+                type="email"
+                placeholder="admin@exemplo.com"
+                value={purgeEmail}
+                onChange={e => setPurgeEmail(e.target.value)}
+                className="rounded-xl h-9 text-sm"
+                disabled={purgeLoading}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Senha</Label>
+              <div className="relative">
+                <Input
+                  type={showPw ? "text" : "password"}
+                  placeholder="••••••••"
+                  value={purgePassword}
+                  onChange={e => setPurgePassword(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && handlePurge()}
+                  className="rounded-xl h-9 text-sm pr-9"
+                  disabled={purgeLoading}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw(p => !p)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button
+                variant="outline"
+                className="flex-1 rounded-xl h-9 text-sm"
+                onClick={() => { setShowPurgeModal(false); setPurgeEmail(""); setPurgePassword(""); }}
+                disabled={purgeLoading}
+              >
+                Cancelar
+              </Button>
+              <Button
+                variant="destructive"
+                className="flex-1 rounded-xl h-9 text-sm gap-1.5"
+                onClick={handlePurge}
+                disabled={purgeLoading || !purgeEmail || !purgePassword}
+              >
+                {purgeLoading ? "Apagando..." : <><Trash2 className="w-3.5 h-3.5" /> Confirmar e apagar</>}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

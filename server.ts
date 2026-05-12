@@ -1054,6 +1054,44 @@ export async function createApp() {
     }
   });
 
+  // ── Admin: apagar TODOS os apontamentos ──────────────────────────────────
+  // Requer autenticação: verifica a senha do admin via Supabase Auth
+  app.delete("/api/admin/purge-attendance", async (req, res) => {
+    try {
+      const { email, password } = req.body as { email?: string; password?: string };
+      if (!email || !password) {
+        return res.status(400).json({ error: "Email e senha são obrigatórios" });
+      }
+
+      // Validate credentials via Supabase Auth
+      const anonUrl = process.env.VITE_SUPABASE_URL!;
+      const anonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE!;
+      const { createClient: cc } = await import("@supabase/supabase-js");
+      const anonClient = cc(anonUrl, anonKey, { auth: { autoRefreshToken: false, persistSession: false } });
+      const { data: authData, error: authError } = await anonClient.auth.signInWithPassword({ email, password });
+      if (authError || !authData.user) {
+        return res.status(401).json({ error: "Senha incorreta ou usuário não encontrado" });
+      }
+
+      // Check if user has ADMIN role
+      const role = authData.user.app_metadata?.system_role ?? authData.user.user_metadata?.system_role ?? "VIEWER";
+      if (role !== "ADMIN") {
+        return res.status(403).json({ error: "Apenas administradores podem executar esta ação" });
+      }
+
+      // Delete all time_entries first (FK constraint), then attendance_records
+      const { error: e1 } = await supabase.from("time_entries").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+      if (e1) throw new Error("Erro ao apagar marcações: " + e1.message);
+
+      const { error: e2 } = await supabase.from("attendance_records").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+      if (e2) throw new Error("Erro ao apagar apontamentos: " + e2.message);
+
+      res.json({ success: true, message: "Todos os apontamentos foram apagados." });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   return app;
 }
 
