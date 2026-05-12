@@ -37,19 +37,30 @@ const getAI = () => {
 
 /**
  * Extract text from a PDF buffer.
- * Uses pdf-parse v1.1.1 which bundles its own pdfjs and works in any
- * Node.js environment including Vercel serverless (no native modules, no web worker).
+ *
+ * Uses `unpdf` — built specifically for serverless/edge environments:
+ *  - Bundles pdfjs-dist with no web worker required
+ *  - Zero native modules / no C++ addons
+ *  - Works in Node.js, Vercel, AWS Lambda, Deno, Bun, browsers
+ *
+ * Buffer must be converted to Uint8Array because pdfjs rejects Buffer instances.
  */
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
   try {
-    // Dynamic import keeps it out of the Vite client bundle
-    const pdfParse = (await import("pdf-parse")).default;
-    const data = await pdfParse(buffer);
-    if (!data?.text?.trim()) throw new Error("No text extracted from PDF");
-    return data.text;
+    const { extractText } = await import("unpdf");
+
+    // pdfjs requires Uint8Array, not Buffer (even though Buffer extends Uint8Array)
+    const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+
+    const { text } = await extractText(uint8, { mergePages: true });
+    const result = Array.isArray(text) ? text.join("\n") : String(text ?? "");
+
+    if (!result.trim()) throw new Error("No text extracted from PDF");
+    return result;
   } catch (error: any) {
-    console.error("PDF parsing error:", error?.message ?? error);
-    throw new Error("Failed to parse PDF content");
+    const msg: string = error?.message ?? String(error);
+    console.error("PDF parsing error:", msg);
+    throw new Error(`Failed to parse PDF content: ${msg}`);
   }
 }
 
