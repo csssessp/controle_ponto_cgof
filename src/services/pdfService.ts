@@ -51,28 +51,54 @@ function decodePDFString(s: string): string {
 /**
  * Extract text from PDF buffer using raw stream parsing + zlib decompression.
  * Zero external dependencies — works in any Node.js environment including Vercel serverless.
+ * Uses Buffer.indexOf() to avoid catastrophic regex backtracking on binary data.
  */
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
   try {
-    const bytes = buffer.toString("latin1");
-    const allContent: string[] = [bytes];
+    const allContent: string[] = [];
 
-    // Try to decompress every stream block (FlateDecode / zlib)
-    const streamRx = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
-    let m: RegExpExecArray | null;
-    while ((m = streamRx.exec(bytes)) !== null) {
-      const raw = Buffer.from(m[1], "latin1");
-      for (const fn of [inflate, inflateRaw] as typeof inflate[]) {
+    // ── Locate and decompress every stream block using indexOf (no regex on binary) ──
+    const STREAM    = Buffer.from("stream");
+    const ENDSTREAM = Buffer.from("endstream");
+    let pos = 0;
+
+    while (pos < buffer.length) {
+      const streamStart = buffer.indexOf(STREAM, pos);
+      if (streamStart === -1) break;
+
+      // Skip "stream" keyword + optional \r\n
+      let dataStart = streamStart + STREAM.length;
+      if (buffer[dataStart] === 0x0d) dataStart++; // \r
+      if (buffer[dataStart] === 0x0a) dataStart++; // \n
+
+      const endStart = buffer.indexOf(ENDSTREAM, dataStart);
+      if (endStart === -1) break;
+
+      // Trim trailing \r\n before "endstream"
+      let dataEnd = endStart;
+      if (dataEnd > dataStart && buffer[dataEnd - 1] === 0x0a) dataEnd--;
+      if (dataEnd > dataStart && buffer[dataEnd - 1] === 0x0d) dataEnd--;
+
+      const streamData = buffer.slice(dataStart, dataEnd);
+
+      // Try inflate then inflateRaw (FlateDecode streams)
+      for (const fn of [inflate, inflateRaw]) {
         try {
-          const dec = await fn(raw);
+          const dec = await fn(streamData);
           allContent.push(dec.toString("latin1"));
           break;
-        } catch { /* not this encoding, try next */ }
+        } catch { /* not a compressed stream, skip */ }
       }
+
+      pos = endStart + ENDSTREAM.length;
     }
+
+    // Also include the raw PDF bytes — covers uncompressed text streams
+    allContent.push(buffer.toString("latin1"));
 
     const combined = allContent.join("\n");
     const texts: string[] = [];
+    let m: RegExpExecArray | null;
 
     // (text)Tj  /  (text)' / (text)"
     const tjRx = /\(([^)\\]*(?:\\[\s\S][^)\\]*)*)\)\s*(?:Tj|'|")/g;

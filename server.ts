@@ -887,19 +887,17 @@ export async function createApp() {
           }
 
           const sched = await getEmpSchedule(employeeId);
-          let savedRecords = 0;
-          let skippedRecords = 0;
 
+          // ── Build all attendance_record payloads for this employee ──
+          const recordPayloads: any[] = [];
           for (const rec of records || []) {
             if (!rec.date) continue;
             const isoDate = parseToISO(rec.date);
             if (!isoDate) continue;
-
-            const hours = (rec.entries?.length)
+            const hours = rec.entries?.length
               ? calculateWorkHours(rec.entries, sched.expected, sched.lunch)
               : { totalWorkMinutes: 0, overtime50Minutes: 0, overtime100Minutes: 0, nightShiftMinutes: 0, delayMinutes: 0 };
-
-            const recordPayload = {
+            recordPayloads.push({
               employee_id: employeeId,
               date: isoDate,
               status: rec.status || "NORMAL",
@@ -910,52 +908,81 @@ export async function createApp() {
               night_shift: hours.nightShiftMinutes,
               delay: hours.delayMinutes,
               updated_at: new Date().toISOString(),
-            };
+              _entries: rec.entries || [], // temporary, stripped before upsert
+            });
+          }
 
-            // ── Dedup: check if record already exists for this employee+date ──
-            const { data: existing } = await supabase
+          if (!recordPayloads.length) {
+            results.push({ employeeId, name, registration, savedRecords: 0, skippedRecords: 0 });
+            continue;
+          }
+
+          // ── Single bulk SELECT to find which dates already exist ──
+          const allDates = recordPayloads.map(r => r.date);
+          const { data: existingRows } = await supabase
+            .from("attendance_records")
+            .select("id,date")
+            .eq("employee_id", employeeId)
+            .in("date", allDates);
+
+          const existingMap = new Map<string, string>(
+            (existingRows ?? []).map(r => [r.date.slice(0, 10), r.id])
+          );
+
+          // ── Batch INSERT new records; UPDATE existing ones in parallel ──
+          const toInsert = recordPayloads.filter(r => !existingMap.has(r.date));
+          const toUpdate = recordPayloads.filter(r =>  existingMap.has(r.date));
+
+          const insertRows = toInsert.map(({ _entries: _e, ...rest }) => rest);
+          const insertedMap = new Map<string, string>();
+          if (insertRows.length) {
+            const { data: ins, error: insErr } = await supabase
               .from("attendance_records")
-              .select("id")
-              .eq("employee_id", employeeId)
-              .eq("date", isoDate)
-              .limit(1);
+              .insert(insertRows)
+              .select("id,date");
+            if (insErr) throw insErr;
+            for (const r of ins ?? []) insertedMap.set(r.date.slice(0, 10), r.id);
+          }
 
-            let recordId: string;
+          // Run updates in parallel (no sequential round-trips)
+          await Promise.all(toUpdate.map(r => {
+            const { _entries: _e, ...payload } = r;
+            return supabase
+              .from("attendance_records")
+              .update(payload)
+              .eq("id", existingMap.get(r.date)!);
+          }));
 
-            if (existing?.[0]) {
-              // Record exists → update it (merge, don't skip)
-              recordId = existing[0].id;
-              await supabase
-                .from("attendance_records")
-                .update(recordPayload)
-                .eq("id", recordId);
-            } else {
-              // New record → insert
-              const { data: inserted, error: insErr } = await supabase
-                .from("attendance_records")
-                .insert([recordPayload])
-                .select("id");
-              if (insErr) { console.error("record insert:", insErr.message); continue; }
-              recordId = inserted![0].id;
-            }
+          const savedRecords = toInsert.length + toUpdate.length;
 
-            savedRecords++;
+          // ── Build date→id map for time_entries replacement ──
+          const dateToId = new Map<string, string>([...existingMap, ...insertedMap]);
 
-            // ── Merge time entries: replace only if new PDF has entries ──
-            if (rec.entries?.length) {
-              // Delete old entries for this record and replace with new ones
-              await supabase.from("time_entries").delete().eq("record_id", recordId);
-              const rows = (rec.entries as any[]).map((e: any) => ({
-                record_id: recordId,
-                time: `${isoDate}T${e.time}:00`,
-                type: e.type,
-                original: e.time,
-              }));
-              await supabase.from("time_entries").insert(rows);
+          // ── Bulk replace time_entries for records that have entries ──
+          const recordsWithEntries = recordPayloads.filter(r => r._entries.length > 0);
+          if (recordsWithEntries.length) {
+            const recordIds = recordsWithEntries
+              .map(r => dateToId.get(r.date))
+              .filter(Boolean) as string[];
+
+            if (recordIds.length) {
+              await supabase.from("time_entries").delete().in("record_id", recordIds);
+
+              const timeRows: any[] = [];
+              for (const r of recordsWithEntries) {
+                const recId = dateToId.get(r.date);
+                if (!recId) continue;
+                for (const e of r._entries as any[]) {
+                  timeRows.push({ record_id: recId, time: `${r.date}T${e.time}:00`, type: e.type, original: e.time });
+                }
+              }
+              if (timeRows.length) {
+                await supabase.from("time_entries").insert(timeRows);
+              }
             }
           }
 
-          results.push({ employeeId, name, registration, savedRecords, skippedRecords });
+          results.push({ employeeId, name, registration, savedRecords, skippedRecords: 0 });
         } catch (err: any) {
           results.push({ error: err.message, name: empData?.name });
         }
