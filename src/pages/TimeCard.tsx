@@ -786,17 +786,20 @@ export default function TimeCard() {
     const w = new Date(d + "T00:00:00").getDay(); return w !== 0 && w !== 6;
   }).length;
 
-  /* Per-day recalculated values (corrects old stored data & applies schedule) */
+  /* Per-day values — use stored DB values (server calculates correctly on save, including no-lunch and leave-day logic) */
   const recordCalcs = useMemo(() => {
     const expected = selectedEmp?.schedules?.expected_work ?? 480;
     const lunch = selectedEmp?.schedules?.lunch_minutes ?? 60;
     const map: Record<string, { net: number; ot: number; deficit: number }> = {};
     for (const r of records) {
       const key = r.date.substring(0, 10);
-      if (r.time_entries?.length) {
-        // On leave/vacation days with entries, all hours are overtime (expected = 0)
+      if (r.time_entries?.length && (r.total_work != null)) {
+        // Trust the values stored by the server (they respect no_lunch and leave-day logic)
+        map[key] = { net: r.total_work || 0, ot: r.overtime50 || 0, deficit: r.delay || 0 };
+      } else if (r.time_entries?.length) {
+        // Fallback recalc for records without stored totals (e.g. imported data)
         const isLeave = LEAVE_STATUSES.includes(r.status || "");
-        map[key] = calcHours(r.time_entries, isLeave ? 0 : expected, lunch);
+        map[key] = calcHours(r.time_entries, isLeave ? 0 : expected, isLeave ? 0 : lunch);
       } else {
         map[key] = { net: r.total_work || 0, ot: r.overtime50 || 0, deficit: r.delay || 0 };
       }
@@ -2080,8 +2083,10 @@ export default function TimeCard() {
 
                 {/* KPI mini cards */}
                 {(() => {
-                  const expected = LEAVE_STATUSES.includes(editStatus) ? 0 : (selectedEmp?.schedules?.expected_work ?? 480);
-                  const lunch = noLunch ? 0 : (selectedEmp?.schedules?.lunch_minutes ?? 60);
+                  const isLeaveStatus = LEAVE_STATUSES.includes(editStatus);
+                  const expected = isLeaveStatus ? 0 : (selectedEmp?.schedules?.expected_work ?? 480);
+                  // For leave days, never deduct lunch (all hours = overtime). Also respect the noLunch toggle.
+                  const lunch = (noLunch || isLeaveStatus) ? 0 : (selectedEmp?.schedules?.lunch_minutes ?? 60);
                   const dayCalc = editEntries.length > 0
                     ? calcHours(editEntries, expected, lunch)
                     : { net: editRecord?.total_work ?? 0, ot: (editRecord?.overtime50 ?? 0), deficit: editRecord?.delay ?? 0 };

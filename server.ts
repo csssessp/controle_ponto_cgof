@@ -520,7 +520,9 @@ export async function createApp() {
       const sched = await getEmpSchedule(employeeId);
       const isLeave = LEAVE_STATUSES.includes(status || "");
       const effExpected = (isLeave && entries?.length) ? 0 : sched.expected;
-      const hours = entries?.length ? calculateWorkHours(entries, effExpected, sched.lunch, !!no_lunch) : { totalWorkMinutes:0, overtime50Minutes:0, overtime100Minutes:0, nightShiftMinutes:0, delayMinutes:0 };
+      // For leave days, never deduct lunch (all worked hours count as overtime)
+      const effectiveNoLunch = !!no_lunch || isLeave;
+      const hours = entries?.length ? calculateWorkHours(entries, effExpected, sched.lunch, effectiveNoLunch) : { totalWorkMinutes:0, overtime50Minutes:0, overtime100Minutes:0, nightShiftMinutes:0, delayMinutes:0 };
       const { data: rec, error: recErr } = await supabase
         .from("attendance_records")
         .upsert({
@@ -581,7 +583,9 @@ export async function createApp() {
         const effectiveStatus = updates.status ?? rec0?.status ?? "";
         const isLeave = LEAVE_STATUSES.includes(effectiveStatus);
         const effExpected = (isLeave && entries.length) ? 0 : sched.expected;
-        const hours = calculateWorkHours(entries, effExpected, sched.lunch, !!no_lunch);
+        // For leave days, never deduct lunch (all worked hours count as overtime)
+        const effectiveNoLunch = !!no_lunch || isLeave;
+        const hours = calculateWorkHours(entries, effExpected, sched.lunch, effectiveNoLunch);
         Object.assign(updates, {
           total_work: hours.totalWorkMinutes,
           overtime50: hours.overtime50Minutes,
