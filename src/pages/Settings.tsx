@@ -89,7 +89,7 @@ export default function Settings() {
   // User form (removed — PanelUsers manages its own state)
 
   // Appearance
-  const [accentColor, setAccentColor] = useState(ACCENT_COLORS[0].value);
+  const [accentColor, setAccentColor] = useState(ACCENT_COLORS[0].hex);
 
   const load = useCallback(async () => {
     try {
@@ -1130,15 +1130,15 @@ function PanelAppearance({ accentColor, setAccentColor }: any) {
           {ACCENT_COLORS.map(c => (
             <button
               key={c.value}
-              onClick={() => setAccentColor(c.value)}
+              onClick={() => setAccentColor(c.hex)}
               className={cn(
                 "w-full flex items-center gap-3 px-4 py-3 rounded-2xl border transition-all hover:bg-muted/30",
-                accentColor === c.value ? "border-primary bg-primary/5 shadow-sm" : "border-border"
+                accentColor === c.hex ? "border-primary bg-primary/5 shadow-sm" : "border-border"
               )}
             >
               <div className="w-6 h-6 rounded-full shadow-sm border border-black/10" style={{ backgroundColor: c.hex }} />
               <span className="text-sm font-medium flex-1 text-left">{c.label}</span>
-              {accentColor === c.value && <Check className="w-4 h-4 text-primary" />}
+              {accentColor === c.hex && <Check className="w-4 h-4 text-primary" />}
             </button>
           ))}
         </div>
