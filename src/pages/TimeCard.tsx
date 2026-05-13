@@ -851,7 +851,11 @@ export default function TimeCard() {
     : bankSeedTotal;
 
   /* ── PDF export ────────────────────────────────────────────────────────── */
-  const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportingPdf,   setExportingPdf]   = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);   // 0-100
+  const [exportTotal,    setExportTotal]    = useState(0);
+  const [exportCurrent,  setExportCurrent]  = useState(0);
+  const [exportLabel,    setExportLabel]    = useState("");
 
   /**
    * Compute the correct accumulated bank for an employee in a given year/month.
@@ -999,14 +1003,29 @@ export default function TimeCard() {
     }
   };
 
-  const handleExportAllPdf = async () => {
+  const handleExportAllPdf = async (pinOnly = false) => {
     if (!employees.length) return;
+    const target = pinOnly
+      ? employees.filter(e => e.pin_project)
+      : employees;
+    if (!target.length) {
+      toast.error(pinOnly ? "Nenhum funcionário com Projeto PIN" : "Nenhum funcionário cadastrado");
+      return;
+    }
     setExportingPdf(true);
+    setExportProgress(0);
+    setExportTotal(target.length);
+    setExportCurrent(0);
+    setExportLabel("Carregando logo…");
     try {
       const logoDataUrl = await loadLogoDataUrl();
       const empDataList: PdfOptions[] = [];
 
-      for (const emp of employees) {
+      for (let i = 0; i < target.length; i++) {
+        const emp = target[i];
+        setExportCurrent(i + 1);
+        setExportLabel(emp.name);
+        setExportProgress(Math.round(((i) / target.length) * 90)); // reserve last 10% for PDF build
         try {
           const res = await fetch(`/api/attendance/${emp.id}?year=${year}&month=${month}`);
           const d = await res.json();
@@ -1046,14 +1065,25 @@ export default function TimeCard() {
       }
 
       if (empDataList.length === 0) { toast.error("Nenhum dado disponível"); return; }
+      setExportLabel("Gerando PDF…");
+      setExportProgress(92);
       const doc = await buildAllEspelhosPdf(empDataList);
-      doc.save(`Espelho_TODOS_${MONTHS[month - 1]}_${year}.pdf`);
-      toast.success(`PDF único com ${empDataList.length} funcionários exportado com sucesso`);
+      setExportProgress(98);
+      const suffix = pinOnly ? "PIN" : "TODOS";
+      doc.save(`Espelho_${suffix}_${MONTHS[month - 1]}_${year}.pdf`);
+      setExportProgress(100);
+      toast.success(`PDF com ${empDataList.length} funcionário${empDataList.length !== 1 ? "s" : ""} exportado com sucesso`);
     } catch (e) {
       toast.error("Erro ao gerar PDFs");
       console.error(e);
     } finally {
-      setExportingPdf(false);
+      setTimeout(() => {
+        setExportingPdf(false);
+        setExportProgress(0);
+        setExportCurrent(0);
+        setExportTotal(0);
+        setExportLabel("");
+      }, 800);
     }
   };
 
@@ -1195,7 +1225,54 @@ export default function TimeCard() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
 
-      {/* ── Page header ─────────────────────────────────────────────────── */}
+      {/* ── PDF Progress overlay ─────────────────────────────────────────── */}
+      {exportingPdf && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-background rounded-2xl shadow-2xl border border-border p-8 w-[420px] max-w-[90vw] space-y-5">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+                <Download className="w-5 h-5 text-primary animate-bounce" />
+              </div>
+              <div>
+                <p className="font-bold text-sm text-foreground">Gerando PDF…</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {exportTotal > 0
+                    ? `Funcionário ${exportCurrent} de ${exportTotal}`
+                    : "Preparando…"}
+                </p>
+              </div>
+            </div>
+
+            {/* Bar */}
+            <div className="space-y-2">
+              <div className="h-3 w-full bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary rounded-full transition-all duration-300 ease-out"
+                  style={{ width: `${exportProgress}%` }}
+                />
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <span className="truncate max-w-[280px]">{exportLabel}</span>
+                <span className="font-mono font-semibold text-foreground">{exportProgress}%</span>
+              </div>
+            </div>
+
+            {exportTotal > 0 && (
+              <div className="flex gap-1 flex-wrap">
+                {Array.from({ length: exportTotal }).map((_, i) => (
+                  <div
+                    key={i}
+                    className={cn(
+                      "h-1.5 flex-1 rounded-full transition-all duration-300",
+                      i < exportCurrent ? "bg-primary" : "bg-muted"
+                    )}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
@@ -1330,7 +1407,7 @@ export default function TimeCard() {
                 <ChevronDown className="w-3.5 h-3.5" />
               </Button>
               {exportMenuOpen && (
-                <div className="absolute right-0 top-full mt-1 z-50 min-w-[170px] rounded-xl border border-border bg-background shadow-lg overflow-hidden">
+                <div className="absolute right-0 top-full mt-1 z-50 min-w-[190px] rounded-xl border border-border bg-background shadow-lg overflow-hidden">
                   <button
                     className="w-full flex items-center gap-2 px-4 py-2.5 text-xs text-left hover:bg-muted transition-colors disabled:opacity-50"
                     onClick={() => { handleExportCurrentPdf(); setExportMenuOpen(false); }}
@@ -1341,10 +1418,18 @@ export default function TimeCard() {
                   </button>
                   <button
                     className="w-full flex items-center gap-2 px-4 py-2.5 text-xs text-left hover:bg-muted transition-colors"
-                    onClick={() => { handleExportAllPdf(); setExportMenuOpen(false); }}
+                    onClick={() => { handleExportAllPdf(false); setExportMenuOpen(false); }}
                   >
                     <Download className="w-3.5 h-3.5 text-primary" />
                     Todos os funcionários
+                  </button>
+                  <div className="border-t border-border/50" />
+                  <button
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-xs text-left hover:bg-indigo-50 transition-colors"
+                    onClick={() => { handleExportAllPdf(true); setExportMenuOpen(false); }}
+                  >
+                    <span className="w-3.5 h-3.5 rounded flex items-center justify-center bg-indigo-600 text-white text-[9px] font-black shrink-0">P</span>
+                    <span className="text-indigo-700 font-semibold">Projeto PIN</span>
                   </button>
                 </div>
               )}
