@@ -70,6 +70,7 @@ function calculateWorkHours(
   entries: Array<{ time: string; type: string }>,
   expectedMinutes = 480,
   lunchMinutes = 60,
+  noLunch = false,
 ) {
   const sorted = [...entries].sort((a, b) => a.time.localeCompare(b.time));
   let rawMinutes = 0;
@@ -83,8 +84,8 @@ function calculateWorkHours(
       pairCount++;
     }
   }
-  // Single IN/OUT pair (no lunch punch) → deduct lunch automatically
-  const netWork = pairCount === 1 && lunchMinutes > 0
+  // Single IN/OUT pair (no lunch punch) → deduct lunch automatically, unless noLunch flag
+  const netWork = (pairCount === 1 && lunchMinutes > 0 && !noLunch)
     ? Math.max(0, rawMinutes - lunchMinutes)
     : rawMinutes;
   const diff = netWork - expectedMinutes;
@@ -96,6 +97,8 @@ function calculateWorkHours(
     delayMinutes: diff < 0 ? -diff : 0,
   };
 }
+
+const LEAVE_STATUSES = ["VACATION", "PREMIUM_LEAVE", "HOLIDAY", "OFF_DAY"];
 
 async function getEmpSchedule(employeeId: string): Promise<{ expected: number; lunch: number }> {
   const { data } = await supabase
@@ -509,13 +512,15 @@ export async function createApp() {
   app.post("/api/attendance/:employeeId/record", async (req, res) => {
     try {
       const { employeeId } = req.params;
-      const { date, status, justification, entries } = req.body;
+      const { date, status, justification, entries, no_lunch } = req.body;
       const isoDate = parseToISO(date);
       if (!isoDate) return res.status(400).json({ error: "Invalid date" });
 
       // upsert record
       const sched = await getEmpSchedule(employeeId);
-      const hours = entries?.length ? calculateWorkHours(entries, sched.expected, sched.lunch) : { totalWorkMinutes:0, overtime50Minutes:0, overtime100Minutes:0, nightShiftMinutes:0, delayMinutes:0 };
+      const isLeave = LEAVE_STATUSES.includes(status || "");
+      const effExpected = (isLeave && entries?.length) ? 0 : sched.expected;
+      const hours = entries?.length ? calculateWorkHours(entries, effExpected, sched.lunch, !!no_lunch) : { totalWorkMinutes:0, overtime50Minutes:0, overtime100Minutes:0, nightShiftMinutes:0, delayMinutes:0 };
       const { data: rec, error: recErr } = await supabase
         .from("attendance_records")
         .upsert({
@@ -564,16 +569,19 @@ export async function createApp() {
 
   app.put("/api/attendance/record/:recordId", async (req, res) => {
     try {
-      const { status, justification, entries } = req.body;
+      const { status, justification, entries, no_lunch } = req.body;
       const updates: any = { updated_at: new Date().toISOString() };
       if (status !== undefined) updates.status = status;
       if (justification !== undefined) updates.justification = justification;
 
       if (entries !== undefined) {
         const { data: rec0 } = await supabase
-          .from("attendance_records").select("employee_id").eq("id", req.params.recordId).single();
+          .from("attendance_records").select("employee_id, status").eq("id", req.params.recordId).single();
         const sched = rec0 ? await getEmpSchedule(rec0.employee_id) : { expected: 480, lunch: 60 };
-        const hours = calculateWorkHours(entries, sched.expected, sched.lunch);
+        const effectiveStatus = updates.status ?? rec0?.status ?? "";
+        const isLeave = LEAVE_STATUSES.includes(effectiveStatus);
+        const effExpected = (isLeave && entries.length) ? 0 : sched.expected;
+        const hours = calculateWorkHours(entries, effExpected, sched.lunch, !!no_lunch);
         Object.assign(updates, {
           total_work: hours.totalWorkMinutes,
           overtime50: hours.overtime50Minutes,

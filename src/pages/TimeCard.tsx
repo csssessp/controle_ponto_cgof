@@ -26,7 +26,7 @@ import { toast } from "sonner";
 
 /* ── Types ─────────────────────────────────────────────────────────────────── */
 type TimeEntry = { time: string; type: "IN" | "OUT" };
-type RecordStatus = "NORMAL" | "ABSENCE" | "VACATION" | "HOLIDAY" | "CERTIFICATE" | "OFF_DAY" | "COMPENSATION";
+type RecordStatus = "NORMAL" | "ABSENCE" | "VACATION" | "HOLIDAY" | "CERTIFICATE" | "OFF_DAY" | "COMPENSATION" | "DECLARATION" | "PREMIUM_LEAVE";
 
 type AttRecord = {
   id: string; date: string; status: RecordStatus; justification?: string;
@@ -43,14 +43,18 @@ type Employee = {
 
 /* ── Constants ─────────────────────────────────────────────────────────────── */
 const STATUS_META: Record<RecordStatus, { label: string; short: string; color: string; dot: string; bg: string }> = {
-  NORMAL:      { label: "Regular",      short: "REG", color: "text-emerald-700", dot: "bg-emerald-500",  bg: "bg-emerald-50 border-emerald-200" },
-  ABSENCE:     { label: "Falta",        short: "FAL", color: "text-red-700",     dot: "bg-red-500",      bg: "bg-red-50 border-red-200" },
-  VACATION:    { label: "Férias",       short: "FER", color: "text-blue-700",    dot: "bg-blue-500",     bg: "bg-blue-50 border-blue-200" },
-  HOLIDAY:     { label: "Feriado",      short: "FÉR", color: "text-purple-700",  dot: "bg-purple-500",   bg: "bg-purple-50 border-purple-200" },
-  CERTIFICATE: { label: "Atestado",     short: "ATE", color: "text-amber-700",   dot: "bg-amber-500",    bg: "bg-amber-50 border-amber-200" },
-  OFF_DAY:     { label: "Folga",        short: "FLG", color: "text-slate-500",   dot: "bg-slate-300",    bg: "bg-slate-50 border-slate-200" },
-  COMPENSATION:{ label: "Compensação",  short: "COM", color: "text-cyan-700",    dot: "bg-cyan-500",     bg: "bg-cyan-50 border-cyan-200" },
+  NORMAL:       { label: "Regular",      short: "REG", color: "text-emerald-700", dot: "bg-emerald-500",  bg: "bg-emerald-50 border-emerald-200" },
+  ABSENCE:      { label: "Falta",        short: "FAL", color: "text-red-700",     dot: "bg-red-500",      bg: "bg-red-50 border-red-200" },
+  VACATION:     { label: "Férias",       short: "FER", color: "text-blue-700",    dot: "bg-blue-500",     bg: "bg-blue-50 border-blue-200" },
+  HOLIDAY:      { label: "Feriado",      short: "FÉR", color: "text-purple-700",  dot: "bg-purple-500",   bg: "bg-purple-50 border-purple-200" },
+  CERTIFICATE:  { label: "Atestado",     short: "ATE", color: "text-amber-700",   dot: "bg-amber-500",    bg: "bg-amber-50 border-amber-200" },
+  OFF_DAY:      { label: "Folga",        short: "FLG", color: "text-slate-500",   dot: "bg-slate-300",    bg: "bg-slate-50 border-slate-200" },
+  COMPENSATION: { label: "Compensação",  short: "COM", color: "text-cyan-700",    dot: "bg-cyan-500",     bg: "bg-cyan-50 border-cyan-200" },
+  DECLARATION:  { label: "Declaração",   short: "DEC", color: "text-teal-700",    dot: "bg-teal-500",     bg: "bg-teal-50 border-teal-200" },
+  PREMIUM_LEAVE:{ label: "Lic. Prêmio",  short: "LP",  color: "text-violet-700",  dot: "bg-violet-500",   bg: "bg-violet-50 border-violet-200" },
 };
+
+const LEAVE_STATUSES: RecordStatus[] = ["VACATION", "PREMIUM_LEAVE", "HOLIDAY", "OFF_DAY"];
 
 const MONTHS = [
   "Janeiro","Fevereiro","Março","Abril","Maio","Junho",
@@ -617,6 +621,7 @@ export default function TimeCard() {
   const [editJust,    setEditJust]    = useState("");
   const [editEntries, setEditEntries] = useState<TimeEntry[]>([]);
   const [saving,      setSaving]      = useState(false);
+  const [noLunch,     setNoLunch]     = useState(false);
 
   // Accumulated bank from time_bank_entries (seed + manual entries)
   const [bankSeedTotal, setBankSeedTotal] = useState(0);
@@ -789,7 +794,9 @@ export default function TimeCard() {
     for (const r of records) {
       const key = r.date.substring(0, 10);
       if (r.time_entries?.length) {
-        map[key] = calcHours(r.time_entries, expected, lunch);
+        // On leave/vacation days with entries, all hours are overtime (expected = 0)
+        const isLeave = LEAVE_STATUSES.includes(r.status || "");
+        map[key] = calcHours(r.time_entries, isLeave ? 0 : expected, lunch);
       } else {
         map[key] = { net: r.total_work || 0, ot: r.overtime50 || 0, deficit: r.delay || 0 };
       }
@@ -1054,6 +1061,7 @@ export default function TimeCard() {
     setEditRecord(rec);
     setEditStatus((rec?.status as RecordStatus) || "NORMAL");
     setEditJust(rec?.justification || "");
+    setNoLunch(false);
     const entries: TimeEntry[] = (rec?.time_entries || [])
       .sort((a: any, b: any) => a.time.localeCompare(b.time))
       .map((e: any) => ({ time: parseTime(e.time), type: e.type as "IN" | "OUT" }));
@@ -1080,8 +1088,8 @@ export default function TimeCard() {
         method: editRecord ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(editRecord
-          ? { status: editStatus, justification: editJust, entries: editEntries }
-          : { date: editDay, status: editStatus, justification: editJust, entries: editEntries }
+          ? { status: editStatus, justification: editJust, entries: editEntries, no_lunch: noLunch }
+          : { date: editDay, status: editStatus, justification: editJust, entries: editEntries, no_lunch: noLunch }
         ),
       });
       const d = await r.json();
@@ -2072,8 +2080,8 @@ export default function TimeCard() {
 
                 {/* KPI mini cards */}
                 {(() => {
-                  const expected = selectedEmp?.schedules?.expected_work ?? 480;
-                  const lunch = selectedEmp?.schedules?.lunch_minutes ?? 60;
+                  const expected = LEAVE_STATUSES.includes(editStatus) ? 0 : (selectedEmp?.schedules?.expected_work ?? 480);
+                  const lunch = noLunch ? 0 : (selectedEmp?.schedules?.lunch_minutes ?? 60);
                   const dayCalc = editEntries.length > 0
                     ? calcHours(editEntries, expected, lunch)
                     : { net: editRecord?.total_work ?? 0, ot: (editRecord?.overtime50 ?? 0), deficit: editRecord?.delay ?? 0 };
@@ -2133,6 +2141,21 @@ export default function TimeCard() {
                     </button>
                   </div>
 
+                  {/* No-lunch toggle */}
+                  <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-[#F5F7FB] border border-[#E2E8F0] cursor-pointer group w-fit">
+                    <div className={cn(
+                      "w-4 h-4 rounded border-2 flex items-center justify-center transition-all shrink-0",
+                      noLunch ? "bg-[#2563EB] border-[#2563EB]" : "border-[#CBD5E1] bg-white"
+                    )}>
+                      {noLunch && <svg viewBox="0 0 12 10" className="w-2.5 h-2 text-white fill-none stroke-white stroke-[2]"><polyline points="1,5 4,8 11,1"/></svg>}
+                    </div>
+                    <input type="checkbox" className="sr-only" checked={noLunch} onChange={e => setNoLunch(e.target.checked)} />
+                    <span className="text-xs font-semibold text-[#475569] group-hover:text-[#0F172A] transition-colors">
+                      Não descontar intervalo de almoço
+                    </span>
+                    {noLunch && <span className="text-[10px] font-bold text-[#2563EB] bg-[#EFF6FF] px-2 py-0.5 rounded-full border border-[#BFDBFE]">ativo</span>}
+                  </label>
+
                   {editEntries.length === 0 ? (
                     <div className="py-8 text-center rounded-2xl bg-[#F5F7FB] border border-dashed border-[#E2E8F0]">
                       <Clock className="w-8 h-8 text-[#94A3B8] mx-auto mb-2" />
@@ -2184,6 +2207,18 @@ export default function TimeCard() {
                     </div>
                   )}
                 </div>
+
+                {/* Leave-with-entries info */}
+                {LEAVE_STATUSES.includes(editStatus) && editEntries.length > 0 && (
+                  <div className="flex items-start gap-2.5 px-4 py-3 rounded-2xl bg-blue-50 border border-blue-200">
+                    <div className="w-4 h-4 rounded-full bg-blue-500 flex items-center justify-center shrink-0 mt-0.5">
+                      <span className="text-white text-[9px] font-bold">i</span>
+                    </div>
+                    <p className="text-xs text-blue-700 leading-relaxed">
+                      <strong>Apontamento em período de {STATUS_META[editStatus].label}:</strong> como a expectativa de trabalho é zero neste dia, todas as horas lançadas serão computadas como <strong>horas extras</strong>.
+                    </p>
+                  </div>
+                )}
 
                 {/* Observation */}
                 <div className="bg-white rounded-2xl border border-[#E2E8F0] p-4 shadow-sm space-y-3">

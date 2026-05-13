@@ -162,6 +162,8 @@ export default function Reports() {
   // Per-technician report state
   const [techReports, setTechReports] = useState<EmpReport[]>([]);
   const [techLoading, setTechLoading] = useState(false);
+  const [techSearch, setTechSearch] = useState("");
+  const [techOnlyProject, setTechOnlyProject] = useState(false);
 
   /* ── API ─────────────────────────────────────────────────────────────── */
   const load = useCallback(async () => {
@@ -178,6 +180,72 @@ export default function Reports() {
     finally { setLoading(false); }
   }, [year, month]);
   useEffect(() => { load(); }, [load]);
+
+  const loadTechData = useCallback(async () => {
+    setTechLoading(true);
+    try {
+      const [empRes, absRes] = await Promise.all([
+        fetch("/api/employees"),
+        fetch(`/api/reports/absences?year=${year}&month=${month}`),
+      ]);
+      const { employees } = await empRes.json();
+      const { records: absRecords } = await absRes.json();
+      const absByEmp: Record<string, number> = {};
+      for (const r of (absRecords ?? [])) {
+        absByEmp[r.employee_id] = (absByEmp[r.employee_id] ?? 0) + 1;
+      }
+      const reports: EmpReport[] = await Promise.all(
+        (employees ?? []).map(async (emp: any) => {
+          try {
+            const [attRes, bankRes] = await Promise.all([
+              fetch(`/api/attendance/${emp.id}?year=${year}&month=${month}`),
+              fetch(`/api/time-bank/${emp.id}`),
+            ]);
+            const attData = await attRes.json();
+            const bankData = await bankRes.json();
+            const records: any[] = attData.records ?? [];
+            const totalWork = records.reduce((s: number, r: any) => s + (r.total_work ?? 0), 0);
+            const overtime = records.reduce((s: number, r: any) => s + (r.overtime50 ?? 0) + (r.overtime100 ?? 0), 0);
+            const delays = records.reduce((s: number, r: any) => s + (r.delay ?? 0), 0);
+            const seedTotal: number = bankData.totalMinutes ?? 0;
+            const bankEntries: any[] = bankData.entries ?? [];
+            let bankCutoff: { year: number; month: number } | null = null;
+            if (bankEntries.length) {
+              const latest = bankEntries.map((e: any) => (e.date ?? "").substring(0, 10)).filter(Boolean).sort().at(-1);
+              if (latest) { const [by, bm] = latest.split("-").map(Number); bankCutoff = { year: by, month: bm }; }
+            }
+            const bankNet = overtime - delays;
+            const afterCutoff = !bankCutoff || (year > bankCutoff.year || (year === bankCutoff.year && month >= bankCutoff.month));
+            const accBank = (afterCutoff ? seedTotal + bankNet : seedTotal) - (emp.pin_project ? 2400 : 0);
+            return {
+              id: emp.id, name: emp.name, registration: emp.registration ?? "—",
+              role_title: emp.role_title, departments: emp.departments,
+              totalWork, overtime, delays, absences: absByEmp[emp.id] ?? 0,
+              accBank, pin_project: emp.pin_project,
+            };
+          } catch {
+            return {
+              id: emp.id, name: emp.name, registration: emp.registration ?? "—",
+              role_title: emp.role_title, departments: emp.departments,
+              totalWork: 0, overtime: 0, delays: 0, absences: absByEmp[emp.id] ?? 0,
+            };
+          }
+        })
+      );
+      setTechReports(reports);
+    } catch (e: any) {
+      toast.error("Erro ao carregar: " + e.message);
+    } finally {
+      setTechLoading(false);
+    }
+  }, [year, month]);
+
+  useEffect(() => {
+    if (activeTab === "bytechnician" && techReports.length === 0 && !techLoading) {
+      loadTechData();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   /* ── Derived ─────────────────────────────────────────────────────────── */
   const formattedChart = useMemo(() => chartData.map(p => ({
@@ -510,7 +578,7 @@ export default function Reports() {
               { v: "catalog",   label: "Catálogo",     icon: Layers },
               { v: "absences",  label: "Faltas",       icon: AlertTriangle },
               { v: "overtime",  label: "Horas Extras", icon: TrendingUp },
-              { v: "bytechnician", label: "Por Técnico", icon: Users },
+              { v: "bytechnician", label: "Projeto", icon: Users },
             ].map(t => (
               <button
                 key={t.v}
@@ -949,101 +1017,64 @@ export default function Reports() {
             </Card>
           </div>}
 
-          {/* ── POR TÉCNICO TAB ───────────────────────────────────────── */}
+          {/* ── PROJETO TAB ───────────────────────────────────────── */}
           {activeTab === "bytechnician" && <div className="mt-6 space-y-5">
             <Card className="rounded-[20px] border-border shadow-sm bg-card">
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-4 flex-wrap">
                   <div>
-                    <CardTitle className="text-base font-bold">Relatório por Técnico</CardTitle>
-                    <CardDescription className="capitalize mt-0.5">{MONTHS[month-1]} {year}</CardDescription>
+                    <CardTitle className="text-base font-bold">Relatório do Projeto</CardTitle>
+                    <CardDescription className="capitalize mt-0.5">{MONTHS[month-1]} {year} — Funcionários com Apontamento no Projeto</CardDescription>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap items-center">
+                    {/* Search input */}
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/50" />
+                      <input
+                        type="text"
+                        placeholder="Buscar funcionário..."
+                        value={techSearch}
+                        onChange={e => setTechSearch(e.target.value)}
+                        className="pl-8 pr-3 py-1.5 text-xs rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/20 w-44"
+                      />
+                    </div>
+                    {/* Project-only toggle */}
+                    <label className="flex items-center gap-1.5 cursor-pointer select-none px-3 py-1.5 rounded-xl border border-border text-xs font-medium text-muted-foreground hover:bg-muted/40 transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={techOnlyProject}
+                        onChange={e => setTechOnlyProject(e.target.checked)}
+                        className="w-3.5 h-3.5 accent-primary"
+                      />
+                      Apenas PIN Projeto
+                    </label>
                     <Button
                       variant="outline"
                       size="sm"
                       className="rounded-xl gap-2 text-xs"
                       disabled={techLoading}
-                      onClick={async () => {
-                        setTechLoading(true);
-                        try {
-                          const [empRes, absRes] = await Promise.all([
-                            fetch("/api/employees"),
-                            fetch(`/api/reports/absences?year=${year}&month=${month}`),
-                          ]);
-                          const { employees } = await empRes.json();
-                          const { records: absRecords } = await absRes.json();
-                          // Count absences per employee
-                          const absByEmp: Record<string, number> = {};
-                          for (const r of (absRecords ?? [])) {
-                            absByEmp[r.employee_id] = (absByEmp[r.employee_id] ?? 0) + 1;
-                          }
-                          // Fetch attendance per employee for overtime/delays
-                          const reports: EmpReport[] = await Promise.all(
-                            (employees ?? []).map(async (emp: any) => {
-                              try {
-                                const [attRes, bankRes] = await Promise.all([
-                                  fetch(`/api/attendance/${emp.id}?year=${year}&month=${month}`),
-                                  fetch(`/api/time-bank/${emp.id}`),
-                                ]);
-                                const attData = await attRes.json();
-                                const bankData = await bankRes.json();
-                                const records: any[] = attData.records ?? [];
-                                const totalWork = records.reduce((s: number, r: any) => s + (r.total_work ?? 0), 0);
-                                const overtime = records.reduce((s: number, r: any) => s + (r.overtime50 ?? 0) + (r.overtime100 ?? 0), 0);
-                                const delays = records.reduce((s: number, r: any) => s + (r.delay ?? 0), 0);
-                                // Compute accumulated bank
-                                const seedTotal: number = bankData.totalMinutes ?? 0;
-                                const bankEntries: any[] = bankData.entries ?? [];
-                                let bankCutoff: { year: number; month: number } | null = null;
-                                if (bankEntries.length) {
-                                  const latest = bankEntries.map((e: any) => (e.date ?? "").substring(0, 10)).filter(Boolean).sort().at(-1);
-                                  if (latest) { const [by, bm] = latest.split("-").map(Number); bankCutoff = { year: by, month: bm }; }
-                                }
-                                const bankNet = overtime - delays;
-                                const afterCutoff = !bankCutoff || (year > bankCutoff.year || (year === bankCutoff.year && month >= bankCutoff.month));
-                                const accBank = (afterCutoff ? seedTotal + bankNet : seedTotal) - (emp.pin_project ? 2400 : 0);
-                                return {
-                                  id: emp.id, name: emp.name, registration: emp.registration ?? "—",
-                                  role_title: emp.role_title, departments: emp.departments,
-                                  totalWork, overtime, delays, absences: absByEmp[emp.id] ?? 0,
-                                  accBank, pin_project: emp.pin_project,
-                                };
-                              } catch {
-                                return {
-                                  id: emp.id, name: emp.name, registration: emp.registration ?? "—",
-                                  role_title: emp.role_title, departments: emp.departments,
-                                  totalWork: 0, overtime: 0, delays: 0, absences: absByEmp[emp.id] ?? 0,
-                                };
-                              }
-                            })
-                          );
-                          setTechReports(reports);
-                        } catch (e: any) {
-                          toast.error("Erro ao carregar: " + e.message);
-                        } finally {
-                          setTechLoading(false);
-                        }
-                      }}
+                      onClick={loadTechData}
                     >
                       {techLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                      Carregar Dados
+                      Atualizar
                     </Button>
                     <Button
                       size="sm"
                       className="rounded-xl gap-2 text-xs"
                       disabled={techReports.length === 0}
                       onClick={() => {
+                        const visible = techReports
+                          .filter(r => (!techOnlyProject || r.pin_project) && (!techSearch || r.name.toLowerCase().includes(techSearch.toLowerCase())));
                         const monthLabel = MONTHS[month - 1];
                         const genDate = new Date().toLocaleString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-                        const totalHrs = techReports.reduce((s, r) => s + r.totalWork, 0);
-                        const totalOt  = techReports.reduce((s, r) => s + r.overtime, 0);
-                        const totalAbs = techReports.reduce((s, r) => s + r.absences, 0);
+                        const totalHrs = visible.reduce((s, r) => s + r.totalWork, 0);
+                        const totalOt  = visible.reduce((s, r) => s + r.overtime, 0);
+                        const totalAbs = visible.reduce((s, r) => s + r.absences, 0);
 
-                        const rows = techReports.map((r, idx) => `
+                        const rows = visible.map((r, idx) => `
                           <tr class="${idx % 2 === 1 ? 'alt' : ''}">
                             <td class="num">${idx + 1}</td>
-                            <td class="name">${r.name}</td>
+                            <td class="name">${r.name}${r.pin_project ? ' <span style="font-size:9px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:99px;padding:1px 6px;font-weight:700;vertical-align:middle;">PIN</span>' : ''}</td>
                             <td>${r.registration}</td>
                             <td>${r.departments?.name ?? "—"}</td>
                             <td class="small">${r.role_title ?? "—"}</td>
@@ -1174,7 +1205,7 @@ export default function Reports() {
   <div class="summary-row">
     <div class="summary-card card-blue">
       <div class="s-label">Servidores</div>
-      <div class="s-val">${techReports.length}</div>
+      <div class="s-val">${visible.length}</div>
       <div class="s-sub">no período</div>
     </div>
     <div class="summary-card card-green">
@@ -1237,7 +1268,7 @@ export default function Reports() {
   <!-- Footer -->
   <div class="doc-footer">
     <div class="fl">CGOF — Centro de Gestão de Operações e Finanças &nbsp;|&nbsp; Secretaria de Estado da Saúde / SP</div>
-    <div class="fr">Período de referência: <strong>${monthLabel} ${year}</strong> &nbsp;|&nbsp; ${techReports.length} servidor(es)</div>
+    <div class="fr">Período de referência: <strong>${monthLabel} ${year}</strong> &nbsp;|&nbsp; ${visible.length} servidor(es)</div>
   </div>
 
 </div>
@@ -1263,43 +1294,96 @@ export default function Reports() {
                 {!techLoading && techReports.length === 0 && (
                   <div className="py-16 flex flex-col items-center gap-3 text-center">
                     <Users className="w-10 h-10 text-muted-foreground/20" />
-                    <p className="text-sm text-muted-foreground">Clique em "Carregar Dados" para buscar informações do período</p>
+                    <p className="text-sm text-muted-foreground">Aguarde enquanto os dados são carregados...</p>
                   </div>
                 )}
-                {!techLoading && techReports.length > 0 && (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-border bg-muted/30">
-                          {["Nome", "Matrícula", "Setor", "Cargo", "H. Trabalhadas", "H. Extras", "Atrasos", "Bco. Acum.", "Faltas"].map(h => (
-                            <th key={h} className="text-left px-5 py-3 text-[10px] font-bold text-muted-foreground uppercase tracking-widest whitespace-nowrap">{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {techReports.map((r, i) => (
-                          <tr key={r.id} className={cn("hover:bg-muted/20 transition-colors", i > 0 && "border-t border-border/50")}>
-                            <td className="px-5 py-3 font-semibold text-foreground whitespace-nowrap">{r.name}</td>
-                            <td className="px-5 py-3 font-mono text-xs text-muted-foreground">{r.registration}</td>
-                            <td className="px-5 py-3 text-xs text-muted-foreground">{r.departments?.name ?? "—"}</td>
-                            <td className="px-5 py-3 text-xs text-muted-foreground">{r.role_title ?? "—"}</td>
-                            <td className="px-5 py-3 font-mono text-xs">{toHHMM(r.totalWork)}</td>
-                            <td className="px-5 py-3 font-mono text-xs text-emerald-600">{toHHMM(r.overtime)}</td>
-                            <td className="px-5 py-3 font-mono text-xs text-amber-600">{toHHMM(r.delays)}</td>
-                            <td className={cn("px-5 py-3 font-mono text-xs font-semibold", r.accBank !== undefined ? (r.accBank >= 0 ? "text-emerald-600" : "text-red-600") : "text-muted-foreground")}>
-                              {r.accBank !== undefined ? ((r.accBank >= 0 ? "+" : "") + toHHMM(r.accBank)) : "—"}
-                            </td>
-                            <td className="px-5 py-3 text-center">
-                              <span className={cn("inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold", r.absences > 0 ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
-                                {r.absences}
-                              </span>
-                            </td>
+                {!techLoading && techReports.length > 0 && (() => {
+                  const visible = techReports
+                    .filter(r => (!techOnlyProject || r.pin_project) && (!techSearch || r.name.toLowerCase().includes(techSearch.toLowerCase())));
+                  return (
+                    <div className="overflow-x-auto">
+                      {/* Summary row */}
+                      <div className="flex items-center gap-4 px-5 py-3 bg-muted/20 border-b border-border text-xs text-muted-foreground">
+                        <span><strong className="text-foreground">{visible.length}</strong> servidor(es)</span>
+                        <span>·</span>
+                        <span>H. Trabalhadas: <strong className="text-foreground font-mono">{toHHMM(visible.reduce((s,r)=>s+r.totalWork,0))}</strong></span>
+                        <span>·</span>
+                        <span>H. Extras: <strong className="text-emerald-600 font-mono">{toHHMM(visible.reduce((s,r)=>s+r.overtime,0))}</strong></span>
+                        <span>·</span>
+                        <span>Atrasos: <strong className="text-amber-600 font-mono">{toHHMM(visible.reduce((s,r)=>s+r.delays,0))}</strong></span>
+                        <span>·</span>
+                        <span>Faltas: <strong className="text-red-600">{visible.reduce((s,r)=>s+r.absences,0)}</strong></span>
+                        <span className="ml-auto">
+                          <button
+                            onClick={() => {
+                              const header = ["Nome","Matrícula","Setor","Cargo","H.Trabalhadas","H.Extras","Atrasos","Bco.Acum","Faltas","PIN Projeto"];
+                              const csvRows = visible.map(r => [
+                                r.name, r.registration, r.departments?.name ?? "", r.role_title ?? "",
+                                toHHMM(r.totalWork), toHHMM(r.overtime), toHHMM(r.delays),
+                                r.accBank !== undefined ? toHHMM(r.accBank) : "",
+                                r.absences, r.pin_project ? "Sim" : "Não",
+                              ].map(v => `"${String(v).replace(/"/g,'""')}"`).join(","));
+                              const csv = [header.join(","), ...csvRows].join("\n");
+                              const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+                              const url = URL.createObjectURL(blob);
+                              const a = document.createElement("a");
+                              a.href = url; a.download = `relatorio-projeto-${year}${String(month).padStart(2,"0")}.csv`;
+                              a.click(); URL.revokeObjectURL(url);
+                            }}
+                            className="flex items-center gap-1 text-[10px] font-bold text-primary hover:text-primary/80 transition-colors"
+                          >
+                            <FileDown className="w-3 h-3" /> Exportar CSV
+                          </button>
+                        </span>
+                      </div>
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-border bg-muted/30">
+                            {["#", "Nome", "Matrícula", "Setor", "Cargo", "H. Trabalhadas", "H. Extras", "Atrasos", "Bco. Acum.", "Faltas"].map(h => (
+                              <th key={h} className="text-left px-5 py-3 text-[10px] font-bold text-muted-foreground uppercase tracking-widest whitespace-nowrap">{h}</th>
+                            ))}
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                        </thead>
+                        <tbody>
+                          {visible.map((r, i) => (
+                            <tr key={r.id} className={cn("hover:bg-muted/20 transition-colors", i > 0 && "border-t border-border/50")}>
+                              <td className="px-5 py-3 text-[10px] font-semibold text-muted-foreground">{i + 1}</td>
+                              <td className="px-5 py-3 font-semibold text-foreground whitespace-nowrap">
+                                <div className="flex items-center gap-2">
+                                  {r.name}
+                                  {r.pin_project && (
+                                    <span className="text-[9px] font-bold text-blue-600 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded-full leading-none">PIN</span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 font-mono text-xs text-muted-foreground">{r.registration}</td>
+                              <td className="px-5 py-3 text-xs text-muted-foreground">{r.departments?.name ?? "—"}</td>
+                              <td className="px-5 py-3 text-xs text-muted-foreground">{r.role_title ?? "—"}</td>
+                              <td className="px-5 py-3 font-mono text-xs">{toHHMM(r.totalWork)}</td>
+                              <td className="px-5 py-3 font-mono text-xs text-emerald-600">{r.overtime > 0 ? `+${toHHMM(r.overtime)}` : "—"}</td>
+                              <td className="px-5 py-3 font-mono text-xs text-amber-600">{r.delays > 0 ? toHHMM(r.delays) : "—"}</td>
+                              <td className={cn("px-5 py-3 font-mono text-xs font-semibold", r.accBank !== undefined ? (r.accBank >= 0 ? "text-emerald-600" : "text-red-600") : "text-muted-foreground")}>
+                                {r.accBank !== undefined ? ((r.accBank >= 0 ? "+" : "") + toHHMM(r.accBank)) : "—"}
+                              </td>
+                              <td className="px-5 py-3 text-center">
+                                <span className={cn("inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold", r.absences > 0 ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
+                                  {r.absences}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                          {visible.length === 0 && (
+                            <tr>
+                              <td colSpan={10} className="px-5 py-10 text-center text-sm text-muted-foreground">
+                                Nenhum funcionário encontrado com os filtros aplicados.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
               </CardContent>
             </Card>
           </div>}
