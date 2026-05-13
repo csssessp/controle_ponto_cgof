@@ -115,6 +115,14 @@ export default function Settings() {
     document.documentElement.style.setProperty("--primary", accentColor);
   }, [accentColor]);
 
+  // Reset editing states when panel changes (prevent stale state hiding buttons)
+  useEffect(() => {
+    setDeptEditing(null);
+    setDeptName("");
+    setSchedEditing(null);
+    setSchedForm({});
+  }, [activePanel]);
+
   // ── Org ──────────────────────────────────────────────────────────────────
   const saveOrg = async () => {
     setSavingOrg(true);
@@ -666,15 +674,13 @@ function PanelSectors({ departments, employees, deptName, setDeptName, deptEditi
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
           {departments.length} setor{departments.length !== 1 ? "es" : ""}
         </p>
-        {!showForm && !deptEditing && (
-          <Button
-            size="sm"
-            onClick={() => { setShowForm(true); setDeptName(""); }}
-            className="rounded-xl h-8 gap-1.5 text-xs"
-          >
-            <Plus className="w-3.5 h-3.5" /> Novo Setor
-          </Button>
-        )}
+        <Button
+          size="sm"
+          onClick={() => { setShowForm(true); setDeptEditing(null); setDeptName(""); }}
+          className="rounded-xl h-8 gap-1.5 text-xs"
+        >
+          <Plus className="w-3.5 h-3.5" /> Novo Setor
+        </Button>
       </div>
 
       {/* Add / edit form */}
@@ -825,15 +831,13 @@ function PanelSchedules({ schedules, employees, schedForm, setSchedForm, schedEd
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
           {schedules.length} jornada{schedules.length !== 1 ? "s" : ""}
         </p>
-        {!showForm && !schedEditing && (
-          <Button
-            size="sm"
-            onClick={() => { setShowForm(true); setSchedForm({}); }}
-            className="rounded-xl h-8 gap-1.5 text-xs"
-          >
-            <Plus className="w-3.5 h-3.5" /> Nova Jornada
-          </Button>
-        )}
+        <Button
+          size="sm"
+          onClick={() => { setShowForm(true); setSchedEditing(null); setSchedForm({}); }}
+          className="rounded-xl h-8 gap-1.5 text-xs"
+        >
+          <Plus className="w-3.5 h-3.5" /> Nova Jornada
+        </Button>
       </div>
 
       {/* Form */}
@@ -1017,15 +1021,13 @@ function PanelUsers() {
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
           {loadingUsers ? "Carregando…" : `${sysUsers.length} usuário${sysUsers.length !== 1 ? "s" : ""} ativo${sysUsers.length !== 1 ? "s" : ""}`}
         </p>
-        {!showForm && (
-          <Button
-            size="sm"
-            onClick={() => { setShowForm(true); setForm({ name: "", email: "", password: "", role: "VIEWER" }); }}
-            className="rounded-xl h-8 gap-1.5 text-xs"
-          >
-            <Plus className="w-3.5 h-3.5" /> Novo Usuário
-          </Button>
-        )}
+        <Button
+          size="sm"
+          onClick={() => { setShowForm(true); setForm({ name: "", email: "", password: "", role: "VIEWER" }); }}
+          className="rounded-xl h-8 gap-1.5 text-xs"
+        >
+          <Plus className="w-3.5 h-3.5" /> Novo Usuário
+        </Button>
       </div>
 
       {/* Users list */}
