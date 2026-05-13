@@ -7,7 +7,7 @@ import {
   Search, UserPlus, MoreHorizontal, Mail, Phone, Building2,
   Pencil, Trash2, UserCheck, UserX, Plus, Save, TrendingUp, TrendingDown,
   ChevronRight, Filter, X, SlidersHorizontal, Users, Briefcase, Clock,
-  BarChart3, ArrowUpRight, Activity, Eye, Download, Upload,
+  BarChart3, ArrowUpRight, Activity, Eye, EyeOff, Download, Upload,
   Hash, MapPin, CalendarDays, AlertCircle, CheckCircle2, Circle,
   User, Loader2,
 } from "lucide-react";
@@ -29,6 +29,8 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { supabase } from "@/src/lib/supabase";
+import { useAuthStore } from "@/src/lib/store";
 
 /* ── Types ─────────────────────────────────────────────────────────────────── */
 type Employee = {
@@ -109,6 +111,10 @@ export default function Employees() {
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteShowPass, setDeleteShowPass] = useState(false);
+
+  const { profile } = useAuthStore();
 
   // Bank of hours
   const [bankEntries, setBankEntries] = useState<BankEntry[]>([]);
@@ -253,13 +259,21 @@ export default function Employees() {
 
   const doDelete = async () => {
     if (!deleteTarget) return;
+    if (!deletePassword.trim()) { toast.error("Informe sua senha para confirmar"); return; }
     setDeleting(true);
     try {
+      // Verify password before deleting
+      const email = profile?.email ?? "";
+      if (!email) throw new Error("Usuário não autenticado");
+      const { error: authError } = await supabase.auth.signInWithPassword({ email, password: deletePassword });
+      if (authError) { toast.error("Senha incorreta"); setDeleting(false); return; }
+
       const r = await fetch("/api/employees/" + deleteTarget.id, { method: "DELETE" });
       if (!r.ok) throw new Error("Erro ao excluir");
       setEmployees(prev => prev.filter(e => e.id !== deleteTarget.id));
       if (drawerEmp?.id === deleteTarget.id) setDrawerEmp(null);
       setDeleteTarget(null);
+      setDeletePassword("");
       toast.success("Funcionário excluído");
     } catch (e: any) { toast.error(e.message); }
     finally { setDeleting(false); }
@@ -1501,7 +1515,7 @@ export default function Employees() {
       </Dialog>
 
       {/* Delete confirm */}
-      <Dialog open={!!deleteTarget} onOpenChange={open => !open && setDeleteTarget(null)}>
+      <Dialog open={!!deleteTarget} onOpenChange={open => { if (!open) { setDeleteTarget(null); setDeletePassword(""); setDeleteShowPass(false); } }}>
         <DialogContent className="max-w-sm rounded-[24px]">
           <DialogHeader>
             <DialogTitle className="text-destructive flex items-center gap-2">
@@ -1512,10 +1526,34 @@ export default function Employees() {
             Deseja excluir permanentemente <strong className="text-foreground">{deleteTarget?.name}</strong>?
             Os registros de ponto vinculados serão mantidos.
           </p>
+          <div className="space-y-1.5 mt-1">
+            <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
+              Confirme sua senha de acesso
+            </Label>
+            <div className="relative">
+              <Input
+                type={deleteShowPass ? "text" : "password"}
+                placeholder="••••••••"
+                value={deletePassword}
+                onChange={e => setDeletePassword(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && doDelete()}
+                className="rounded-xl h-10 pr-10"
+                disabled={deleting}
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={() => setDeleteShowPass(v => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                {deleteShowPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
           <DialogFooter className="gap-2 mt-2">
-            <Button variant="outline" onClick={() => setDeleteTarget(null)} className="rounded-xl h-10">Cancelar</Button>
-            <Button variant="destructive" onClick={doDelete} disabled={deleting} className="rounded-xl h-10 px-6">
-              {deleting ? "Excluindo..." : "Excluir"}
+            <Button variant="outline" onClick={() => { setDeleteTarget(null); setDeletePassword(""); setDeleteShowPass(false); }} className="rounded-xl h-10">Cancelar</Button>
+            <Button variant="destructive" onClick={doDelete} disabled={deleting || !deletePassword.trim()} className="rounded-xl h-10 px-6">
+              {deleting ? "Verificando..." : "Excluir"}
             </Button>
           </DialogFooter>
         </DialogContent>

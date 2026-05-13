@@ -133,8 +133,8 @@ export default function Settings() {
   };
 
   // ── Departments ───────────────────────────────────────────────────────────
-  const saveDept = async () => {
-    if (!deptName.trim()) return;
+  const saveDept = async (): Promise<boolean> => {
+    if (!deptName.trim()) return false;
     setDeptSaving(true);
     try {
       const isEdit = !!deptEditing;
@@ -150,7 +150,8 @@ export default function Settings() {
       else setDepartments(p => [...p, d.department]);
       setDeptEditing(null); setDeptName("");
       toast.success(isEdit ? "Setor atualizado" : "Setor criado");
-    } catch (e: any) { toast.error(e.message); }
+      return true;
+    } catch (e: any) { toast.error(e.message); return false; }
     finally { setDeptSaving(false); }
   };
 
@@ -163,8 +164,8 @@ export default function Settings() {
   };
 
   // ── Schedules ─────────────────────────────────────────────────────────────
-  const saveSched = async () => {
-    if (!schedForm.name?.trim()) { toast.error("Nome obrigatório"); return; }
+  const saveSched = async (): Promise<boolean> => {
+    if (!schedForm.name?.trim()) { toast.error("Nome obrigatório"); return false; }
     setSchedSaving(true);
     try {
       const isEdit = !!schedEditing;
@@ -184,21 +185,23 @@ export default function Settings() {
         });
       } catch (fetchErr: any) {
         toast.error("Sem conexão com o servidor: " + fetchErr.message);
-        return;
+        return false;
       }
       const d = await r.json();
       if (!r.ok) {
         const detail = [d.error, d.hint, d.details].filter(Boolean).join(" — ");
         toast.error("Erro ao salvar: " + (detail || d.code || "Erro desconhecido"));
-        return;
+        return false;
       }
       const s = d.schedule;
       if (isEdit) setSchedules(p => p.map(x => x.id === s.id ? s : x));
       else setSchedules(p => [...p, s]);
       setSchedEditing(null); setSchedForm({});
       toast.success(isEdit ? "Jornada atualizada!" : "Jornada criada!");
+      return true;
     } catch (e: any) {
       toast.error("Erro inesperado: " + e.message);
+      return false;
     } finally {
       setSchedSaving(false);
     }
@@ -644,39 +647,65 @@ function PanelCompany({ org, setOrg, saveOrg, savingOrg }: any) {
 
 // ── Setores ─────────────────────────────────────────────────────────────────
 function PanelSectors({ departments, employees, deptName, setDeptName, deptEditing, setDeptEditing, saveDept, deptSaving, deleteDept }: any) {
+  const [showForm, setShowForm] = useState(false);
+
+  const handleSave = async () => {
+    const ok = await saveDept();
+    if (ok) setShowForm(false);
+  };
+  const handleCancel = () => {
+    setShowForm(false);
+    setDeptEditing(null);
+    setDeptName("");
+  };
+
   return (
     <div className="space-y-5">
-      {/* Add / edit form */}
-      <div className="rounded-2xl border border-border p-4 space-y-3 bg-muted/20">
-        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
-          {deptEditing ? "Editar Setor" : "Novo Setor"}
-        </p>
-        <div className="flex gap-2">
-          <Input
-            value={deptName}
-            onChange={e => setDeptName(e.target.value)}
-            placeholder="Nome do setor..."
-            className="rounded-xl flex-1"
-            onKeyDown={(e: React.KeyboardEvent) => e.key === "Enter" && saveDept()}
-          />
-          <Button onClick={saveDept} disabled={deptSaving || !deptName.trim()} className="rounded-xl gap-1.5 px-4">
-            <Plus className="w-4 h-4" />
-            {deptEditing ? "Atualizar" : "Criar"}
-          </Button>
-          {deptEditing && (
-            <Button variant="outline" onClick={() => { setDeptEditing(null); setDeptName(""); }} className="rounded-xl px-3">
-              <X className="w-4 h-4" />
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {/* List */}
-      <div className="space-y-2">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
           {departments.length} setor{departments.length !== 1 ? "es" : ""}
         </p>
-        {departments.length === 0 && (
+        {!showForm && !deptEditing && (
+          <Button
+            size="sm"
+            onClick={() => { setShowForm(true); setDeptName(""); }}
+            className="rounded-xl h-8 gap-1.5 text-xs"
+          >
+            <Plus className="w-3.5 h-3.5" /> Novo Setor
+          </Button>
+        )}
+      </div>
+
+      {/* Add / edit form */}
+      {(showForm || deptEditing) && (
+        <div className="rounded-2xl border border-border p-4 space-y-3 bg-muted/20">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
+            {deptEditing ? "Editar Setor" : "Novo Setor"}
+          </p>
+          <div className="flex gap-2">
+            <Input
+              value={deptName}
+              onChange={e => setDeptName(e.target.value)}
+              placeholder="Nome do setor..."
+              className="rounded-xl flex-1"
+              onKeyDown={(e: React.KeyboardEvent) => e.key === "Enter" && handleSave()}
+              autoFocus
+            />
+            <Button onClick={handleSave} disabled={deptSaving || !deptName.trim()} className="rounded-xl gap-1.5 px-4">
+              <Save className="w-4 h-4" />
+              {deptSaving ? "Salvando..." : "Salvar"}
+            </Button>
+            <Button variant="outline" onClick={handleCancel} className="rounded-xl px-3">
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* List */}
+      <div className="space-y-2">
+        {departments.length === 0 && !showForm && !deptEditing && (
           <p className="text-sm text-muted-foreground py-4 text-center">Nenhum setor cadastrado</p>
         )}
         {departments.map((d: Dept) => {
@@ -696,7 +725,7 @@ function PanelSectors({ departments, employees, deptName, setDeptName, deptEditi
                 <Button
                   variant="ghost" size="icon"
                   className="rounded-xl h-8 w-8 text-muted-foreground hover:text-primary"
-                  onClick={() => { setDeptEditing(d); setDeptName(d.name); }}
+                  onClick={() => { setDeptEditing(d); setDeptName(d.name); setShowForm(false); }}
                 >
                   <Pencil className="w-3.5 h-3.5" />
                 </Button>
@@ -718,6 +747,8 @@ function PanelSectors({ departments, employees, deptName, setDeptName, deptEditi
 
 // ── Jornadas ─────────────────────────────────────────────────────────────────
 function PanelSchedules({ schedules, employees, schedForm, setSchedForm, schedEditing, setSchedEditing, saveSched, schedSaving, deleteSched }: any) {
+  const [showForm, setShowForm] = useState(false);
+
   // ── helpers ──────────────────────────────────────────────────────────────
   const minToHHMM = (m: number) =>
     String(Math.floor(Math.max(0, m) / 60)).padStart(2, "0") + ":" + String(Math.max(0, m) % 60).padStart(2, "0");
@@ -725,19 +756,14 @@ function PanelSchedules({ schedules, employees, schedForm, setSchedForm, schedEd
     const [h, mm] = (s || "").split(":").map(Number);
     return ((h || 0) * 60) + (mm || 0);
   };
-  // CLT lunch rules based on NET work time:
-  // net > 6h needs 60min → span-15 > 360 → span > 375 (6h15)
-  // net > 4h needs 15min → span-15 > 240 → span > 255 (4h15)
   const cltLunch = (spanMin: number) =>
     spanMin > 375 ? 60 : spanMin > 255 ? 15 : 0;
 
-  // Re-calculate lunch & carga from entry/exit
   const applyTimes = (start: string, end: string, currentLunch?: number) => {
     const [sh, sm] = start.split(":").map(Number);
     const [eh, em] = end.split(":").map(Number);
     const span = (eh * 60 + em) - (sh * 60 + sm);
     if (span <= 0) return {};
-    // If user already set a custom lunch, keep it; else compute from CLT
     const lunch = currentLunch != null ? currentLunch : cltLunch(span);
     return { lunch_minutes: lunch, expected_work: Math.max(0, span - lunch) };
   };
@@ -782,79 +808,102 @@ function PanelSchedules({ schedules, employees, schedForm, setSchedForm, schedEd
     });
   };
 
+  const handleSave = async () => {
+    const ok = await saveSched();
+    if (ok) setShowForm(false);
+  };
+  const handleCancel = () => {
+    setShowForm(false);
+    setSchedEditing(null);
+    setSchedForm({});
+  };
+
   return (
     <div className="space-y-5">
-      {/* Form */}
-      <div className="rounded-2xl border border-border p-4 space-y-4 bg-muted/20">
-        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
-          {schedEditing ? "Editar Jornada" : "Nova Jornada"}
-        </p>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="col-span-2 space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Nome</Label>
-            <Input value={schedForm.name || ""} onChange={e => setSchedForm((p: any) => ({ ...p, name: e.target.value }))} placeholder="Ex: Turno Manhã" className="rounded-xl" />
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Entrada</Label>
-            <Input type="time" value={schedForm.start_time || ""} onChange={e => onStartChange(e.target.value)} className="rounded-xl" />
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Saída</Label>
-            <Input type="time" value={schedForm.end_time || ""} onChange={e => onEndChange(e.target.value)} className="rounded-xl" />
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Intervalo</Label>
-            <Input
-              type="time"
-              value={schedForm.lunch_minutes != null ? minToHHMM(schedForm.lunch_minutes) : ""}
-              placeholder="01:00"
-              onChange={e => onLunchChange(e.target.value)}
-              className="rounded-xl"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Carga Diária</Label>
-            <Input
-              type="time"
-              value={schedForm.expected_work != null ? minToHHMM(schedForm.expected_work) : ""}
-              placeholder="08:00"
-              onChange={e => onCargaChange(e.target.value)}
-              className="rounded-xl"
-            />
-          </div>
-        </div>
-
-        {/* Live preview */}
-        {schedForm.start_time && schedForm.end_time && schedForm.expected_work != null && (
-          <div className="rounded-xl bg-primary/5 border border-primary/10 p-3 text-xs flex items-center gap-2 text-primary">
-            <Clock className="w-3.5 h-3.5 shrink-0" />
-            <span>
-              <strong>{schedForm.start_time}</strong> → <strong>{schedForm.end_time}</strong>
-              {" · "} Intervalo <strong>{minToHHMM(schedForm.lunch_minutes ?? 0)}</strong>
-              {" · "} Carga <strong>{minToHHMM(schedForm.expected_work)}</strong>/dia
-            </span>
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <Button onClick={saveSched} disabled={schedSaving || !schedForm.name?.trim()} className="flex-1 rounded-xl gap-1.5">
-            <Plus className="w-4 h-4" />
-            {schedSaving ? "Salvando..." : schedEditing ? "Atualizar" : "Criar Jornada"}
-          </Button>
-          {schedEditing && (
-            <Button variant="outline" onClick={() => { setSchedEditing(null); setSchedForm({}); }} className="rounded-xl px-3">
-              <X className="w-4 h-4" />
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {/* List */}
-      <div className="space-y-2">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
           {schedules.length} jornada{schedules.length !== 1 ? "s" : ""}
         </p>
-        {schedules.length === 0 && (
+        {!showForm && !schedEditing && (
+          <Button
+            size="sm"
+            onClick={() => { setShowForm(true); setSchedForm({}); }}
+            className="rounded-xl h-8 gap-1.5 text-xs"
+          >
+            <Plus className="w-3.5 h-3.5" /> Nova Jornada
+          </Button>
+        )}
+      </div>
+
+      {/* Form */}
+      {(showForm || schedEditing) && (
+        <div className="rounded-2xl border border-border p-4 space-y-4 bg-muted/20">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
+            {schedEditing ? "Editar Jornada" : "Nova Jornada"}
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="col-span-2 space-y-1.5">
+              <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Nome</Label>
+              <Input value={schedForm.name || ""} onChange={e => setSchedForm((p: any) => ({ ...p, name: e.target.value }))} placeholder="Ex: Turno Manhã" className="rounded-xl" autoFocus />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Entrada</Label>
+              <Input type="time" value={schedForm.start_time || ""} onChange={e => onStartChange(e.target.value)} className="rounded-xl" />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Saída</Label>
+              <Input type="time" value={schedForm.end_time || ""} onChange={e => onEndChange(e.target.value)} className="rounded-xl" />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Intervalo</Label>
+              <Input
+                type="time"
+                value={schedForm.lunch_minutes != null ? minToHHMM(schedForm.lunch_minutes) : ""}
+                placeholder="01:00"
+                onChange={e => onLunchChange(e.target.value)}
+                className="rounded-xl"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Carga Diária</Label>
+              <Input
+                type="time"
+                value={schedForm.expected_work != null ? minToHHMM(schedForm.expected_work) : ""}
+                placeholder="08:00"
+                onChange={e => onCargaChange(e.target.value)}
+                className="rounded-xl"
+              />
+            </div>
+          </div>
+
+          {/* Live preview */}
+          {schedForm.start_time && schedForm.end_time && schedForm.expected_work != null && (
+            <div className="rounded-xl bg-primary/5 border border-primary/10 p-3 text-xs flex items-center gap-2 text-primary">
+              <Clock className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                <strong>{schedForm.start_time}</strong> → <strong>{schedForm.end_time}</strong>
+                {" · "} Intervalo <strong>{minToHHMM(schedForm.lunch_minutes ?? 0)}</strong>
+                {" · "} Carga <strong>{minToHHMM(schedForm.expected_work)}</strong>/dia
+              </span>
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <Button onClick={handleSave} disabled={schedSaving || !schedForm.name?.trim()} className="flex-1 rounded-xl gap-1.5">
+              <Save className="w-4 h-4" />
+              {schedSaving ? "Salvando..." : "Salvar"}
+            </Button>
+            <Button variant="outline" onClick={handleCancel} className="rounded-xl px-3">
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* List */}
+      <div className="space-y-2">
+        {schedules.length === 0 && !showForm && !schedEditing && (
           <p className="text-sm text-muted-foreground py-4 text-center">Nenhuma jornada configurada</p>
         )}
         {schedules.map((s: Schedule) => {
@@ -880,7 +929,7 @@ function PanelSchedules({ schedules, employees, schedForm, setSchedForm, schedEd
                 <Button
                   variant="ghost" size="icon"
                   className="rounded-xl h-8 w-8 text-muted-foreground hover:text-primary"
-                  onClick={() => { setSchedEditing(s); setSchedForm({ ...s }); }}
+                  onClick={() => { setSchedEditing(s); setSchedForm({ ...s }); setShowForm(false); }}
                 >
                   <Pencil className="w-3.5 h-3.5" />
                 </Button>
@@ -909,6 +958,7 @@ function PanelUsers() {
   const [form, setForm] = useState({ name: "", email: "", password: "", role: "VIEWER" });
   const [showPass, setShowPass] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [showForm, setShowForm] = useState(false);
 
   const fetchUsers = async () => {
     setLoadingUsers(true);
@@ -940,6 +990,7 @@ function PanelUsers() {
       if (!r.ok) throw new Error(d.error || "Erro ao criar usuário");
       toast.success("Usuário criado com sucesso!");
       setForm({ name: "", email: "", password: "", role: "VIEWER" });
+      setShowForm(false);
       fetchUsers();
     } catch (e: any) {
       toast.error(e.message);
@@ -961,13 +1012,25 @@ function PanelUsers() {
 
   return (
     <div className="space-y-5">
-      {/* Users list */}
-      <div>
-        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-3">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
           {loadingUsers ? "Carregando…" : `${sysUsers.length} usuário${sysUsers.length !== 1 ? "s" : ""} ativo${sysUsers.length !== 1 ? "s" : ""}`}
         </p>
-        <div className="space-y-2">
-          {sysUsers.map(u => (
+        {!showForm && (
+          <Button
+            size="sm"
+            onClick={() => { setShowForm(true); setForm({ name: "", email: "", password: "", role: "VIEWER" }); }}
+            className="rounded-xl h-8 gap-1.5 text-xs"
+          >
+            <Plus className="w-3.5 h-3.5" /> Novo Usuário
+          </Button>
+        )}
+      </div>
+
+      {/* Users list */}
+      <div className="space-y-2">
+        {sysUsers.map(u => (
             <div key={u.id} className="flex items-center justify-between px-4 py-3 rounded-2xl border border-border bg-card group">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center font-bold text-primary text-xs">
@@ -993,13 +1056,16 @@ function PanelUsers() {
             </div>
           ))}
         </div>
-      </div>
-
-      <Separator />
 
       {/* New user form */}
-      <div className="space-y-4">
-        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Novo Usuário</p>
+      {showForm && (
+      <div className="rounded-2xl border border-border p-4 space-y-4 bg-muted/20">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Novo Usuário</p>
+          <Button variant="ghost" size="icon" className="h-6 w-6 rounded-lg" onClick={() => setShowForm(false)}>
+            <X className="w-3.5 h-3.5" />
+          </Button>
+        </div>
         <FP label="Nome Completo" icon={Users} value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} />
         <FP label="E-mail" icon={Mail} value={form.email} onChange={v => setForm(f => ({ ...f, email: v }))} type="email" />
         <div className="space-y-1.5">
@@ -1047,6 +1113,7 @@ function PanelUsers() {
           <Save className="w-4 h-4" /> {saving ? "Salvando…" : "Salvar Usuário"}
         </Button>
       </div>
+      )}
     </div>
   );
 }
@@ -1094,6 +1161,13 @@ function PanelAppearance({ accentColor, setAccentColor }: any) {
           </div>
         ))}
       </div>
+
+      <Button
+        onClick={() => toast.success("Preferências salvas!")}
+        className="w-full rounded-xl h-11 gap-2"
+      >
+        <Save className="w-4 h-4" /> Salvar Preferências
+      </Button>
     </div>
   );
 }
@@ -1119,6 +1193,13 @@ function PanelPermissions() {
           <Switch defaultChecked={p.default} className="shrink-0 mt-0.5" />
         </div>
       ))}
+
+      <Button
+        onClick={() => toast.success("Permissões salvas!")}
+        className="w-full rounded-xl h-11 gap-2 mt-2"
+      >
+        <Save className="w-4 h-4" /> Salvar Permissões
+      </Button>
     </div>
   );
 }
