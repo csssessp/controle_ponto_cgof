@@ -163,7 +163,7 @@ export default function Reports() {
   const [techReports, setTechReports] = useState<EmpReport[]>([]);
   const [techLoading, setTechLoading] = useState(false);
   const [techSearch, setTechSearch] = useState("");
-  const [techOnlyProject, setTechOnlyProject] = useState(false);
+  const [techOnlyProject, setTechOnlyProject] = useState(true); // default: show only PIN project employees
 
   /* ── API ─────────────────────────────────────────────────────────────── */
   const load = useCallback(async () => {
@@ -1023,8 +1023,8 @@ export default function Reports() {
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-4 flex-wrap">
                   <div>
-                    <CardTitle className="text-base font-bold">Relatório do Projeto</CardTitle>
-                    <CardDescription className="capitalize mt-0.5">{MONTHS[month-1]} {year} — Funcionários com Apontamento no Projeto</CardDescription>
+                        <CardTitle className="text-base font-bold">Relatório PIN Projeto</CardTitle>
+                    <CardDescription className="capitalize mt-0.5">{MONTHS[month-1]} {year} — Funcionários do Projeto PIN</CardDescription>
                   </div>
                   <div className="flex gap-2 flex-wrap items-center">
                     {/* Search input */}
@@ -1067,21 +1067,21 @@ export default function Reports() {
                           .filter(r => (!techOnlyProject || r.pin_project) && (!techSearch || r.name.toLowerCase().includes(techSearch.toLowerCase())));
                         const monthLabel = MONTHS[month - 1];
                         const genDate = new Date().toLocaleString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-                        const totalHrs = visible.reduce((s, r) => s + r.totalWork, 0);
-                        const totalOt  = visible.reduce((s, r) => s + r.overtime, 0);
-                        const totalAbs = visible.reduce((s, r) => s + r.absences, 0);
+                        const totalHrs  = visible.reduce((s, r) => s + r.totalWork, 0);
+                        const totalOt   = visible.reduce((s, r) => s + r.overtime, 0);
+                        const totalAbs  = visible.reduce((s, r) => s + r.absences, 0);
+                        const totalDef  = visible.reduce((s, r) => s + r.delays, 0);
 
                         const rows = visible.map((r, idx) => `
                           <tr class="${idx % 2 === 1 ? 'alt' : ''}">
                             <td class="num">${idx + 1}</td>
                             <td class="name">${r.name}${r.pin_project ? ' <span style="font-size:9px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:99px;padding:1px 6px;font-weight:700;vertical-align:middle;">PIN</span>' : ''}</td>
-                            <td>${r.registration}</td>
-                            <td>${r.departments?.name ?? "—"}</td>
                             <td class="small">${r.role_title ?? "—"}</td>
+                            <td>${r.departments?.name ?? "—"}</td>
                             <td class="mono">${toHHMM(r.totalWork)}</td>
                             <td class="mono ot">${r.overtime > 0 ? "+" + toHHMM(r.overtime) : "—"}</td>
-                            <td class="mono delay">${r.delays > 0 ? toHHMM(r.delays) : "—"}</td>
-                            <td class="mono ${r.accBank !== undefined && r.accBank >= 0 ? 'ot' : 'delay'}">${r.accBank !== undefined ? ((r.accBank >= 0 ? "+" : "") + toHHMM(r.accBank)) : "—"}</td>
+                            <td class="mono ${r.accBank !== undefined && r.accBank >= 0 ? 'ot' : 'red'}">${r.accBank !== undefined ? ((r.accBank >= 0 ? "+" : "") + toHHMM(r.accBank)) : "—"}</td>
+                            <td class="mono ${r.delays > 0 ? 'red' : 'ok-val'}">${r.delays > 0 ? toHHMM(r.delays) : "—"}</td>
                             <td class="center ${r.absences > 0 ? 'abs-val' : 'ok-val'}">${r.absences > 0 ? r.absences : "✓"}</td>
                           </tr>
                         `).join("");
@@ -1093,7 +1093,7 @@ export default function Reports() {
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Relatório Mensal de Ponto — ${monthLabel} ${year}</title>
+  <title>Relatório PIN Projeto — ${monthLabel} ${year}</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
     * { margin:0; padding:0; box-sizing:border-box; }
@@ -1116,18 +1116,18 @@ export default function Reports() {
     .title-block { margin:16px 0 14px; display:flex; align-items:flex-end; justify-content:space-between; }
     .report-title { font-size:18px; font-weight:800; color:#0f2044; letter-spacing:-.5px; }
     .report-subtitle { font-size:11px; color:#6b7280; margin-top:3px; }
-    .period-badge { background:#0f2044; color:#fff; font-size:10px; font-weight:700; padding:5px 14px; border-radius:20px; text-transform:capitalize; letter-spacing:.03em; }
+    .period-badge { background:#1e40af; color:#fff; font-size:10px; font-weight:700; padding:5px 14px; border-radius:20px; text-transform:capitalize; letter-spacing:.03em; }
 
     /* ── Summary cards ── */
-    .summary-row { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:18px; }
+    .summary-row { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:18px; }
     .summary-card { border:1.5px solid #e5e7eb; border-radius:10px; padding:10px 14px; }
     .summary-card .s-label { font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#9ca3af; }
     .summary-card .s-val   { font-size:16px; font-weight:800; color:#111827; margin-top:2px; font-variant-numeric:tabular-nums; }
     .summary-card .s-sub   { font-size:9px; color:#9ca3af; margin-top:1px; }
     .card-blue   { border-color:#bfdbfe; background:#eff6ff; } .card-blue   .s-val { color:#1d4ed8; }
     .card-green  { border-color:#bbf7d0; background:#f0fdf4; } .card-green  .s-val { color:#15803d; }
-    .card-amber  { border-color:#fde68a; background:#fffbeb; } .card-amber  .s-val { color:#b45309; }
     .card-red    { border-color:#fecaca; background:#fef2f2; } .card-red    .s-val { color:#dc2626; }
+    .card-amber  { border-color:#fde68a; background:#fffbeb; } .card-amber  .s-val { color:#b45309; }
 
     /* ── Table ── */
     table { width:100%; border-collapse:collapse; font-size:10.5px; }
@@ -1142,7 +1142,7 @@ export default function Reports() {
     td.small { color:#6b7280; font-size:10px; }
     td.mono  { font-family:'Courier New',monospace; font-size:10.5px; }
     td.ot    { color:#15803d; font-weight:600; }
-    td.delay { color:#b45309; }
+    td.red   { color:#dc2626; font-weight:600; }
     td.center { text-align:center; }
     td.abs-val { color:#dc2626; font-weight:700; }
     td.ok-val  { color:#15803d; font-weight:700; }
@@ -1152,7 +1152,6 @@ export default function Reports() {
 
     /* ── Signature block ── */
     .sig-section { margin-top:36px; display:grid; grid-template-columns:1fr 1fr; gap:40px; }
-    .sig-box { }
     .sig-line { border-top:1.5px solid #374151; margin-bottom:6px; }
     .sig-name { font-size:10px; font-weight:700; color:#111827; }
     .sig-role { font-size:9px; color:#6b7280; }
@@ -1163,7 +1162,6 @@ export default function Reports() {
     .doc-footer .fl { font-size:9px; color:#9ca3af; }
     .doc-footer .fr { font-size:9px; color:#9ca3af; text-align:right; }
 
-    /* ── Print rules ── */
     @media print {
       @page { size:A4 landscape; margin:14mm 12mm 14mm 12mm; }
       body { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
@@ -1182,11 +1180,11 @@ export default function Reports() {
       <div class="org-info">
         <h1>Centro de Gestão de Operações e Finanças</h1>
         <p>Secretaria de Estado da Saúde de São Paulo — CGOF</p>
-        <p>Controle de Frequência de Servidores</p>
+        <p>Controle de Frequência de Servidores — Projeto PIN</p>
       </div>
     </div>
     <div class="doc-ref">
-      <div class="doc-num">REL-PONTO-${year}${String(month).padStart(2,'0')}</div>
+      <div class="doc-num">REL-PIN-${year}${String(month).padStart(2,'0')}</div>
       <div class="doc-sub">Documento Oficial</div>
       <div class="doc-sub" style="margin-top:4px">Gerado: ${genDate}</div>
     </div>
@@ -1195,8 +1193,8 @@ export default function Reports() {
   <!-- Title -->
   <div class="title-block">
     <div>
-      <div class="report-title">Relatório Mensal de Ponto</div>
-      <div class="report-subtitle">Por Técnico — Frequência, Horas Extras, Atrasos e Faltas</div>
+      <div class="report-title">Relatório Mensal — Projeto PIN</div>
+      <div class="report-subtitle">Horas Trabalhadas, Extras, Banco de Horas, Déficit e Faltas</div>
     </div>
     <div class="period-badge">${monthLabel} ${year}</div>
   </div>
@@ -1204,24 +1202,29 @@ export default function Reports() {
   <!-- Summary cards -->
   <div class="summary-row">
     <div class="summary-card card-blue">
-      <div class="s-label">Servidores</div>
+      <div class="s-label">Servidores PIN</div>
       <div class="s-val">${visible.length}</div>
-      <div class="s-sub">no período</div>
+      <div class="s-sub">no projeto</div>
     </div>
     <div class="summary-card card-green">
       <div class="s-label">H. Trabalhadas</div>
       <div class="s-val">${toHHMM(totalHrs)}</div>
-      <div class="s-sub">total acumulado</div>
+      <div class="s-sub">total no mês</div>
     </div>
-    <div class="summary-card card-green" style="border-color:#d1fae5">
-      <div class="s-label">H. Extras</div>
+    <div class="summary-card card-green">
+      <div class="s-label">H. Extras Acumuladas</div>
       <div class="s-val">${toHHMM(totalOt)}</div>
-      <div class="s-sub">total acumulado</div>
+      <div class="s-sub">total no mês</div>
     </div>
     <div class="summary-card card-red">
+      <div class="s-label">Déficit / A compensar</div>
+      <div class="s-val">${toHHMM(totalDef)}</div>
+      <div class="s-sub">total no mês</div>
+    </div>
+    <div class="summary-card card-amber">
       <div class="s-label">Faltas</div>
       <div class="s-val">${totalAbs}</div>
-      <div class="s-sub">total no período</div>
+      <div class="s-sub">total no mês</div>
     </div>
   </div>
 
@@ -1232,13 +1235,12 @@ export default function Reports() {
       <tr>
         <th>#</th>
         <th>Nome do Servidor</th>
-        <th>Matrícula</th>
-        <th>Setor</th>
         <th>Cargo</th>
+        <th>Setor</th>
         <th>H. Trabalhadas</th>
-        <th>H. Extras</th>
-        <th>Atrasos</th>
-        <th>Bco. Acum.</th>
+        <th>H. Extras (mês)</th>
+        <th>Banco Acumulado</th>
+        <th>Déficit / A compensar</th>
         <th class="center">Faltas</th>
       </tr>
     </thead>
@@ -1316,11 +1318,12 @@ export default function Reports() {
                         <span className="ml-auto">
                           <button
                             onClick={() => {
-                              const header = ["Nome","Matrícula","Setor","Cargo","H.Trabalhadas","H.Extras","Atrasos","Bco.Acum","Faltas","PIN Projeto"];
+                              const header = ["Nome","Cargo","Setor","H.Trabalhadas","H.Extras (mês)","Banco Acumulado","Déficit/A compensar","Faltas","PIN Projeto"];
                               const csvRows = visible.map(r => [
-                                r.name, r.registration, r.departments?.name ?? "", r.role_title ?? "",
-                                toHHMM(r.totalWork), toHHMM(r.overtime), toHHMM(r.delays),
+                                r.name, r.role_title ?? "", r.departments?.name ?? "",
+                                toHHMM(r.totalWork), toHHMM(r.overtime),
                                 r.accBank !== undefined ? toHHMM(r.accBank) : "",
+                                toHHMM(r.delays),
                                 r.absences, r.pin_project ? "Sim" : "Não",
                               ].map(v => `"${String(v).replace(/"/g,'""')}"`).join(","));
                               const csv = [header.join(","), ...csvRows].join("\n");
@@ -1339,7 +1342,7 @@ export default function Reports() {
                       <table className="w-full text-sm">
                         <thead>
                           <tr className="border-b border-border bg-muted/30">
-                            {["#", "Nome", "Matrícula", "Setor", "Cargo", "H. Trabalhadas", "H. Extras", "Atrasos", "Bco. Acum.", "Faltas"].map(h => (
+                            {["#", "Nome", "Cargo", "Setor", "H. Trabalhadas", "H. Extras (mês)", "Banco Acumulado", "Déficit / A compensar", "Faltas"].map(h => (
                               <th key={h} className="text-left px-5 py-3 text-[10px] font-bold text-muted-foreground uppercase tracking-widest whitespace-nowrap">{h}</th>
                             ))}
                           </tr>
@@ -1356,15 +1359,14 @@ export default function Reports() {
                                   )}
                                 </div>
                               </td>
-                              <td className="px-5 py-3 font-mono text-xs text-muted-foreground">{r.registration}</td>
-                              <td className="px-5 py-3 text-xs text-muted-foreground">{r.departments?.name ?? "—"}</td>
                               <td className="px-5 py-3 text-xs text-muted-foreground">{r.role_title ?? "—"}</td>
+                              <td className="px-5 py-3 text-xs text-muted-foreground">{r.departments?.name ?? "—"}</td>
                               <td className="px-5 py-3 font-mono text-xs">{toHHMM(r.totalWork)}</td>
                               <td className="px-5 py-3 font-mono text-xs text-emerald-600">{r.overtime > 0 ? `+${toHHMM(r.overtime)}` : "—"}</td>
-                              <td className="px-5 py-3 font-mono text-xs text-amber-600">{r.delays > 0 ? toHHMM(r.delays) : "—"}</td>
                               <td className={cn("px-5 py-3 font-mono text-xs font-semibold", r.accBank !== undefined ? (r.accBank >= 0 ? "text-emerald-600" : "text-red-600") : "text-muted-foreground")}>
                                 {r.accBank !== undefined ? ((r.accBank >= 0 ? "+" : "") + toHHMM(r.accBank)) : "—"}
                               </td>
+                              <td className="px-5 py-3 font-mono text-xs text-red-500">{r.delays > 0 ? toHHMM(r.delays) : "—"}</td>
                               <td className="px-5 py-3 text-center">
                                 <span className={cn("inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold", r.absences > 0 ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
                                   {r.absences}
@@ -1374,7 +1376,7 @@ export default function Reports() {
                           ))}
                           {visible.length === 0 && (
                             <tr>
-                              <td colSpan={10} className="px-5 py-10 text-center text-sm text-muted-foreground">
+                              <td colSpan={9} className="px-5 py-10 text-center text-sm text-muted-foreground">
                                 Nenhum funcionário encontrado com os filtros aplicados.
                               </td>
                             </tr>

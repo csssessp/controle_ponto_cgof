@@ -98,6 +98,7 @@ export default function Employees() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "ATIVO" | "INATIVO">("all");
   const [deptFilter, setDeptFilter] = useState("all");
+  const [pinFilter, setPinFilter] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
 
   // Side drawer
@@ -427,10 +428,11 @@ export default function Employees() {
     employees.filter(e => {
       if (statusFilter !== "all" && (e.status ?? "ATIVO") !== statusFilter) return false;
       if (deptFilter !== "all" && e.department_id !== deptFilter) return false;
+      if (pinFilter && !e.pin_project) return false;
       const term = search.trim().toLowerCase();
       return !term || [e.name, e.registration, e.email, e.role_title, e.departments?.name]
         .some(x => x?.toLowerCase().includes(term));
-    }), [employees, search, statusFilter, deptFilter]);
+    }), [employees, search, statusFilter, deptFilter, pinFilter]);
 
   const activeCount = employees.filter(e => (e.status ?? "ATIVO") === "ATIVO").length;
   const inactiveCount = employees.length - activeCount;
@@ -590,11 +592,28 @@ export default function Employees() {
             Filtros
           </Button>
 
-          {(search || statusFilter !== "all" || deptFilter !== "all") && (
+          {/* PIN filter chip */}
+          <button
+            onClick={() => setPinFilter(v => !v)}
+            className={cn(
+              "flex items-center gap-1.5 h-10 px-3.5 rounded-xl border text-xs font-bold transition-all",
+              pinFilter
+                ? "bg-indigo-50 border-indigo-300 text-indigo-700"
+                : "border-border/70 text-muted-foreground hover:bg-muted/40"
+            )}
+          >
+            <span className={cn(
+              "w-5 h-5 rounded-lg flex items-center justify-center text-[10px] font-black",
+              pinFilter ? "bg-indigo-600 text-white" : "bg-muted text-muted-foreground"
+            )}>P</span>
+            Projeto PIN
+          </button>
+
+          {(search || statusFilter !== "all" || deptFilter !== "all" || pinFilter) && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => { setSearch(""); setStatusFilter("all"); setDeptFilter("all"); }}
+              onClick={() => { setSearch(""); setStatusFilter("all"); setDeptFilter("all"); setPinFilter(false); }}
               className="rounded-xl h-10 text-muted-foreground hover:text-foreground gap-1.5"
             >
               <X className="w-3.5 h-3.5" />
@@ -688,7 +707,12 @@ export default function Employees() {
                           )} />
                         </div>
                         <div className="min-w-0">
-                          <p className="font-semibold text-sm text-foreground leading-tight truncate">{emp.name}</p>
+                          <div className="flex items-center gap-1.5">
+                            <p className="font-semibold text-sm text-foreground leading-tight truncate">{emp.name}</p>
+                            {emp.pin_project && (
+                              <span className="shrink-0 text-[9px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded-full leading-none">PIN</span>
+                            )}
+                          </div>
                           <p className="text-[11px] text-muted-foreground font-mono tracking-wider uppercase mt-0.5">
                             #{emp.registration}
                           </p>
