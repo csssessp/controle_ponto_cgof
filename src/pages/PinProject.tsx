@@ -168,12 +168,25 @@ type MatchedEntry = ExcelEntry & {
   matched: boolean;
 };
 
+type AutoMonthData = {
+  acum: number;
+  extras: number;
+  goal: number;
+  recordCount: number;
+  isComplete: boolean;
+  isCurrentMonth: boolean;
+  isManualOverride?: boolean;
+};
+
 type EditState = { minutes: string; open: boolean };
 
 /* ── Component ────────────────────────────────────────────────────────────── */
 export default function PinProject() {
   const [dbEmps, setDbEmps]         = useState<DbEmployee[]>([]);
   const [dbMonthKeys, setDbMonthKeys] = useState<string[]>([]); // extra months from DB (beyond MAI2026)
+  // auto-calculated balances from attendance records: empId → monthKey → data
+  const [autoBalances, setAutoBalances] = useState<Record<string, Record<string, AutoMonthData>>>({});
+  const [autoMonthKeys, setAutoMonthKeys] = useState<string[]>([]); // months present in auto-calc data
   const [loading, setLoading]       = useState(true);
   const [importing, setImporting]   = useState(false);
   // "Importar mês" modal
@@ -191,19 +204,40 @@ export default function PinProject() {
   const [savingId, setSavingId]     = useState<string | null>(null);
   const [showInfo, setShowInfo]     = useState(false);
 
-  /* load DB employees */
+  /* load DB employees + auto-calculated balances from attendance records */
   const loadDbEmployees = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch("/api/pin-project/balances");
-      const j = await r.json();
+      const [balRes, autoRes] = await Promise.all([
+        fetch("/api/pin-project/balances"),
+        fetch("/api/pin-project/auto-balances"),
+      ]);
+      const [j, ja] = await Promise.all([balRes.json(), autoRes.json()]);
+
       if (j.success) {
         setDbEmps(j.employees);
-        // Dynamic month keys from DB that are AFTER May 2026
         const extraKeys: string[] = (j.monthKeys ?? []).filter(
           (k: string) => monthKeyToNum(k) > STATIC_MONTH_NUM
         );
         setDbMonthKeys(extraKeys);
+      }
+
+      if (ja.success && Array.isArray(ja.employees)) {
+        // Build map: empId → monthKey → AutoMonthData
+        const map: Record<string, Record<string, AutoMonthData>> = {};
+        const mkSet = new Set<string>();
+        for (const emp of ja.employees as any[]) {
+          if (!emp.hasAnySeed) continue;
+          map[emp.id] = {};
+          for (const [mk, v] of Object.entries(emp.autoMonths as Record<string, any>)) {
+            map[emp.id][mk] = v as AutoMonthData;
+            if (monthKeyToNum(mk) > STATIC_MONTH_NUM) mkSet.add(mk);
+          }
+        }
+        setAutoBalances(map);
+        // Merge auto month keys with db month keys (union, sorted)
+        const merged = Array.from(mkSet).sort((a, b) => monthKeyToNum(a) - monthKeyToNum(b));
+        setAutoMonthKeys(merged);
       }
     } catch {
       toast.error("Erro ao carregar saldos acumulados PIN");
@@ -231,6 +265,12 @@ export default function PinProject() {
       return { ...ex, dbEmployee: dbEmp, matched: !!dbEmp };
     });
   }, [dbEmps]);
+
+  /* Merged month keys: union of DB imported months + auto-calc months (after MAI2026) */
+  const allDynamicMonthKeys = useMemo(() => {
+    const s = new Set([...dbMonthKeys, ...autoMonthKeys]);
+    return Array.from(s).sort((a, b) => monthKeyToNum(a) - monthKeyToNum(b));
+  }, [dbMonthKeys, autoMonthKeys]);
 
   /* Areas for filter */
   const areas = useMemo(() => ["all", ...Array.from(new Set(EXCEL_DATA.map(e => e.area))).sort()], []);
@@ -275,7 +315,12 @@ export default function PinProject() {
     if (toImport.length === 0) { toast.error("Nenhum funcionário encontrado no sistema para importar."); return; }
     setImporting(true);
     try {
-      const entries = toImport.map(e => ({ employeeId: e.dbEmployee!.id, minutes: e.maiAcumMin!, nome: e.nome }));
+      const entries = toImport.map(e => ({
+        employeeId: e.dbEmployee!.id,
+        minutes: e.maiAcumMin!,
+        nome: e.nome,
+        saldoDezMin: e.saldoDezMin ?? undefined,
+      }));
       const r = await fetch("/api/pin-project/import-bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -419,13 +464,13 @@ export default function PinProject() {
             <Badge variant="outline" className="text-blue-700 border-blue-200 bg-blue-50 text-xs">Projeto PIN 2026</Badge>
           </div>
           <p className="text-sm text-muted-foreground">
-            Saldos acumulados do Projeto PIN por funcionário — atualizado conforme a planilha mensal
+            Saldos acumulados do Projeto PIN — Jan–Mai/26 da planilha · Jun/26 em diante calculados automaticamente do espelho de ponto
           </p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Base: <strong>PIN - HORAS AREAS 2026.xlsx</strong> · Decreto nº 70.273/2025
-            {dbMonthKeys.length > 0 && (
+            Base histórica: <strong>PIN - HORAS AREAS 2026.xlsx</strong> · Decreto nº 70.273/2025
+            {allDynamicMonthKeys.length > 0 && (
               <span className="ml-2 text-emerald-600 font-medium">
-                + {dbMonthKeys.map(k => MONTH_KEY_LABEL[k] ?? k).join(", ")} importados
+                + {allDynamicMonthKeys.map(k => MONTH_KEY_LABEL[k] ?? k).join(", ")} (espelho de ponto)
               </span>
             )}
           </p>
@@ -477,10 +522,10 @@ export default function PinProject() {
                   <div>
                     <p className="font-bold text-blue-800 mb-1.5 flex items-center gap-1.5"><FileSpreadsheet className="w-4 h-4" /> Fluxo de trabalho</p>
                     <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
-                      <li>Saldos em <strong>vermelho</strong> na planilha = negativos</li>
-                      <li>Clique "Importar Planilha" para salvar os saldos no sistema</li>
-                      <li>Edite individualmente com o ícone ✏️</li>
-                      <li>O sistema usa o saldo de Mai/26 como base para Jun/26+</li>
+                      <li>Jan–Mai/26: base na planilha importada (clique "Importar Jan–Mai")</li>
+                      <li>Jun/26 em diante: <strong>calculado automaticamente</strong> do espelho de ponto</li>
+                      <li>Coluna "Saldo Atual" sempre mostra o mês mais recente disponível</li>
+                      <li>Edição manual somente para correções excepcionais (ícone ✏️)</li>
                     </ul>
                   </div>
                 </div>
@@ -546,9 +591,9 @@ export default function PinProject() {
             <div>
               <CardTitle className="text-base font-bold">
                 Saldos Acumulados — Jan a Mai/2026
-                {dbMonthKeys.length > 0 && (
+                {allDynamicMonthKeys.length > 0 && (
                   <span className="ml-2 text-xs font-normal text-emerald-600">
-                    + {dbMonthKeys.map(k => MONTH_KEY_LABEL[k] ?? k).join(", ")}
+                    + {allDynamicMonthKeys.map(k => MONTH_KEY_LABEL[k] ?? k).join(", ")}
                   </span>
                 )}
               </CardTitle>
@@ -588,16 +633,23 @@ export default function PinProject() {
                   <th className="px-3 py-2.5 text-center font-semibold text-foreground bg-blue-50/60">
                     Mai/26 Acumulado<br/><span className="text-[9px] font-normal opacity-60">meta 40h</span>
                   </th>
-                  {/* Dynamic columns for months after May 2026 */}
-                  {dbMonthKeys.map(mk => (
-                    <th key={mk} className="px-3 py-2.5 text-center font-semibold text-emerald-700 bg-emerald-50/40">
-                      {MONTH_KEY_LABEL[mk] ?? mk}<br/>
-                      <span className="text-[9px] font-normal opacity-60">
-                        meta {PIN_GOALS[mk.slice(0,3).toLowerCase()] ? PIN_GOALS[mk.slice(0,3).toLowerCase()] / 60 + "h" : "40h"}
-                      </span>
-                    </th>
-                  ))}
-                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Sistema (Mai)</th>
+                  {/* Dynamic columns for months after May 2026 (auto-calculated from espelho de ponto) */}
+                  {allDynamicMonthKeys.map(mk => {
+                    const isManual = dbMonthKeys.includes(mk);
+                    return (
+                      <th key={mk} className="px-3 py-2.5 text-center font-semibold text-emerald-700 bg-emerald-50/40">
+                        {MONTH_KEY_LABEL[mk] ?? mk}<br/>
+                        <span className="text-[9px] font-normal opacity-60">
+                          meta {PIN_GOALS[mk.slice(0,3).toLowerCase()] ? PIN_GOALS[mk.slice(0,3).toLowerCase()] / 60 + "h" : "40h"}
+                        </span>
+                        <br/>
+                        <span className="text-[8px] font-normal text-emerald-500 opacity-70">
+                          {isManual ? "planilha" : "espelho ponto"}
+                        </span>
+                      </th>
+                    );
+                  })}
+                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Saldo Atual<br/><span className="text-[9px] font-normal opacity-60">auto-calculado</span></th>
                   <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Ação</th>
                 </tr>
               </thead>
@@ -657,13 +709,26 @@ export default function PinProject() {
                           </div>
                         ) : <span className="text-muted-foreground/40 text-[10px]">Sem dados</span>}
                       </td>
-                      {/* Dynamic month cells (Jun, Jul, ...) */}
-                      {dbMonthKeys.map(mk => {
-                        const mkMin = e.dbEmployee?.pinSeeds?.[mk] ?? null;
+                      {/* Dynamic month cells (Jun, Jul, ...) — auto-calculated from espelho de ponto */}
+                      {allDynamicMonthKeys.map(mk => {
+                        const manualMin = e.dbEmployee?.pinSeeds?.[mk] ?? null;
+                        const autoData = e.dbEmployee ? autoBalances[e.dbEmployee.id]?.[mk] : undefined;
+                        const displayMin = manualMin ?? autoData?.acum ?? null;
+                        const isAuto = manualMin === null && autoData !== undefined;
+                        const isCurrentMonth = autoData?.isCurrentMonth ?? false;
+                        const goal = PIN_GOALS[mk.slice(0,3).toLowerCase()] ?? 2400;
                         return (
-                          <td key={mk} className="px-3 py-2 text-center bg-emerald-50/20">
-                            {mkMin !== null ? (
-                              <MonthBar min={mkMin} goal={PIN_GOALS[mk.slice(0,3).toLowerCase()] ?? 2400} />
+                          <td key={mk} className={cn("px-3 py-2 text-center", isCurrentMonth ? "bg-amber-50/30" : "bg-emerald-50/20")}>
+                            {displayMin !== null ? (
+                              <div className="flex flex-col items-center gap-0.5">
+                                <MonthBar min={displayMin} goal={goal} />
+                                {isAuto && (
+                                  <span className="text-[8px] text-emerald-500 opacity-60">auto</span>
+                                )}
+                                {isCurrentMonth && (
+                                  <span className="text-[8px] text-amber-500 opacity-70">em curso</span>
+                                )}
+                              </div>
                             ) : (
                               <span className="text-[10px] text-muted-foreground/30">—</span>
                             )}
@@ -671,17 +736,39 @@ export default function PinProject() {
                         );
                       })}
 
-                      {/* Sistema (Mai/26 importado) */}
+                      {/* Saldo Atual — latest auto-calculated balance */}
                       <td className="px-3 py-2 text-center">
                         {!e.matched ? (
                           <span className="text-[10px] text-orange-500">Não vinculado</span>
-                        ) : dbMin !== null ? (
-                          <span className={cn("text-[11px] font-mono font-semibold", (dbMin ?? 0) < 0 ? "text-red-600" : "text-emerald-600")}>
-                            {toHHMMRaw(dbMin)}
-                          </span>
-                        ) : (
-                          <span className="text-[10px] text-muted-foreground/50">Não importado</span>
-                        )}
+                        ) : (() => {
+                          // Find the most recent month with auto-calc data
+                          const empAutoData = e.dbEmployee ? autoBalances[e.dbEmployee.id] : undefined;
+                          if (empAutoData) {
+                            const latestMk = Object.keys(empAutoData)
+                              .sort((a, b) => monthKeyToNum(b) - monthKeyToNum(a))[0];
+                            if (latestMk) {
+                              const latest = empAutoData[latestMk];
+                              return (
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <span className={cn("text-[11px] font-mono font-semibold", latest.acum < 0 ? "text-red-600" : "text-emerald-600")}>
+                                    {toHHMMRaw(latest.acum)}
+                                  </span>
+                                  <span className="text-[8px] text-muted-foreground opacity-60">
+                                    {MONTH_KEY_LABEL[latestMk] ?? latestMk}
+                                  </span>
+                                </div>
+                              );
+                            }
+                          }
+                          // Fallback to May imported value
+                          return dbMin !== null ? (
+                            <span className={cn("text-[11px] font-mono font-semibold", (dbMin ?? 0) < 0 ? "text-red-600" : "text-emerald-600")}>
+                              {toHHMMRaw(dbMin)}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-muted-foreground/50">Sem saldo base</span>
+                          );
+                        })()}
                       </td>
                       {/* Ação */}
                       <td className="px-3 py-2 text-center">

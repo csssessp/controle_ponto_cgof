@@ -880,10 +880,14 @@ export async function createApp() {
     }
   });
 
-  // POST bulk import PIN seed balances (for May 2026 initial import from spreadsheet)
+  // POST bulk import PIN seed balances
+  // Stores PIN_SEED_MAI2026 (accumulated through May) AND PIN_SEED_DEZ2025 (starting balance)
+  // Both seeds enable full auto-calculation from attendance records
   app.post("/api/pin-project/import-bulk", async (req, res) => {
     try {
-      const { entries } = req.body as { entries: Array<{ employeeId: string; minutes: number; nome: string }> };
+      const { entries } = req.body as {
+        entries: Array<{ employeeId: string; minutes: number; nome: string; saldoDezMin?: number }>;
+      };
       if (!Array.isArray(entries) || entries.length === 0) return res.status(400).json({ error: "Nenhuma entrada fornecida" });
 
       const results: Array<{ employeeId: string; nome: string; ok: boolean; error?: string }> = [];
@@ -893,16 +897,33 @@ export async function createApp() {
           const min = Number(entry.minutes);
           if (isNaN(min)) { results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: false, error: "Minutos inválidos" }); continue; }
 
+          // Store May 2026 accumulated balance (PIN_SEED_MAI2026)
           await supabase.from(BANK_TABLE).delete().eq(BANK_EMP_COL, entry.employeeId).eq("type", PIN_SEED_TYPE);
-
-          const { error } = await supabase.from(BANK_TABLE).insert([{
+          const { error: e1 } = await supabase.from(BANK_TABLE).insert([{
             [BANK_EMP_COL]: entry.employeeId,
             minutes: min,
             date: "2026-05-31",
             type: PIN_SEED_TYPE,
             description: "Saldo acumulado PIN — Jan a Mai/2026 (planilha)",
           }]);
-          results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: !error, error: error?.message });
+
+          // Also store December 2025 starting balance (PIN_SEED_DEZ2025) if provided
+          // This enables auto-calculation of Jan-May from attendance records
+          if (entry.saldoDezMin !== undefined && entry.saldoDezMin !== null) {
+            const dezMin = Number(entry.saldoDezMin);
+            if (!isNaN(dezMin)) {
+              await supabase.from(BANK_TABLE).delete().eq(BANK_EMP_COL, entry.employeeId).eq("type", "PIN_SEED_DEZ2025");
+              await supabase.from(BANK_TABLE).insert([{
+                [BANK_EMP_COL]: entry.employeeId,
+                minutes: dezMin,
+                date: "2025-12-31",
+                type: "PIN_SEED_DEZ2025",
+                description: "Saldo inicial PIN — Dez/2025 (planilha)",
+              }]);
+            }
+          }
+
+          results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: !e1, error: e1?.message });
         } catch (e: any) {
           results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: false, error: e.message });
         }
@@ -910,6 +931,139 @@ export async function createApp() {
 
       const ok = results.filter(r => r.ok).length;
       res.json({ success: true, imported: ok, total: results.length, results });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET auto-computed PIN accumulated balances from attendance records
+  // Uses PIN_SEED_DEZ2025 as starting point to compute Jan–current from actual ponto records.
+  // Uses PIN_SEED_MAI2026 (or any later seed) to compute current and future months.
+  app.get("/api/pin-project/auto-balances", async (_req, res) => {
+    try {
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = now.getMonth() + 1;
+
+      const MONTH_ABBR_TO_NUM: Record<string, number> = {
+        JAN:1,FEV:2,MAR:3,ABR:4,MAI:5,JUN:6,JUL:7,AGO:8,SET:9,OUT:10,NOV:11,DEZ:12,
+      };
+      const mkNum = (k: string) => parseInt(k.slice(3), 10) * 100 + (MONTH_ABBR_TO_NUM[k.slice(0, 3)] ?? 0);
+
+      // Fetch all active employees
+      const { data: emps, error: empErr } = await supabase
+        .from("employees")
+        .select("id,name,cpf,registration,departments(name)")
+        .eq("status", "ATIVO")
+        .order("name");
+      if (empErr) throw new Error(empErr.message);
+      if (!emps || emps.length === 0) return res.json({ success: true, employees: [] });
+
+      const empIds = emps.map((e: any) => e.id);
+
+      // Fetch all PIN_SEED_* entries for all employees in one query
+      const { data: allSeeds } = await supabase
+        .from(BANK_TABLE)
+        .select("*")
+        .like("type", "PIN_SEED_%")
+        .in(BANK_EMP_COL, empIds)
+        .order("date", { ascending: true });
+
+      // Build seed map: empId → { monthKey → minutes }
+      const seedsByEmp: Record<string, Record<string, number>> = {};
+      for (const s of allSeeds || []) {
+        const eid = s.employee_id ?? s.employeeId;
+        const mk = (s.type as string).replace("PIN_SEED_", "");
+        if (!seedsByEmp[eid]) seedsByEmp[eid] = {};
+        seedsByEmp[eid][mk] = s.minutes;
+      }
+
+      // Fetch all attendance records from Jan 2026 onwards — one batch query
+      const { data: allRecs } = await supabase
+        .from("attendance_records")
+        .select("employee_id, date, status, overtime50, overtime100")
+        .in("employee_id", empIds)
+        .gte("date", "2026-01-01")
+        .lte("date", `${currentYear}-${String(currentMonth).padStart(2,"0")}-31`)
+        .order("date");
+
+      // Index records by empId → date prefix
+      const recsByEmp: Record<string, { date: string; overtime50: number; overtime100: number; status: string }[]> = {};
+      for (const r of allRecs || []) {
+        const eid = r.employee_id;
+        if (!recsByEmp[eid]) recsByEmp[eid] = [];
+        recsByEmp[eid].push({ date: r.date, overtime50: r.overtime50 || 0, overtime100: r.overtime100 || 0, status: r.status });
+      }
+
+      const LEAVE_FOR_PIN = new Set(["VACATION","PREMIUM_LEAVE","HOLIDAY","OFF_DAY"]);
+
+      const employees = emps.map((emp: any) => {
+        const seeds = seedsByEmp[emp.id] ?? {};
+        const recs  = recsByEmp[emp.id]  ?? [];
+
+        // Determine best starting seed: prefer the EARLIEST that allows full calculation
+        // DEZ2025 → can calculate Jan 2026 onwards
+        // MAI2026 (or any month) → can calculate from that month + 1 onwards
+        const hasDezSeed = "DEZ2025" in seeds;
+        const startMk = hasDezSeed ? "DEZ2025" : (
+          // Pick the LATEST seed as starting point
+          Object.keys(seeds).sort((a, b) => mkNum(a) - mkNum(b)).at(-1) ?? null
+        );
+        if (!startMk) return { id: emp.id, name: emp.name, cpf: emp.cpf, autoMonths: {}, hasAnySeed: false };
+
+        // Parse starting month
+        const startAbbr = startMk.slice(0, 3);
+        const startYear = parseInt(startMk.slice(3), 10);
+        const startMonthNum = MONTH_ABBR_TO_NUM[startAbbr] ?? 12;
+        let accumulated = seeds[startMk];
+
+        const autoMonths: Record<string, {
+          acum: number; extras: number; goal: number;
+          recordCount: number; isComplete: boolean; isCurrentMonth: boolean;
+        }> = {};
+
+        // Iterate months from startMonth+1 through current month
+        let y = startYear, m = startMonthNum + 1;
+        if (m > 12) { m = 1; y++; }
+
+        while (y < currentYear || (y === currentYear && m <= currentMonth)) {
+          const prefix = `${y}-${String(m).padStart(2, "0")}`;
+          const monthRecs = recs.filter(r => r.date.startsWith(prefix) && !LEAVE_FOR_PIN.has(r.status));
+          const totalExtras = monthRecs.reduce((s, r) => s + r.overtime50 + r.overtime100, 0);
+          const goal = PIN_MONTH_GOALS[m] ?? 2400;
+          const monthDelta = totalExtras - goal;
+          accumulated += monthDelta;
+
+          const abbr = PIN_MONTH_ABBR[m] ?? "???";
+          const mk = `${abbr}${y}`;
+          const isCurrentMonth = (y === currentYear && m === currentMonth);
+          const isComplete = !isCurrentMonth; // past months are complete
+
+          // If a manually-imported seed exists for this month, use it instead
+          // (manual override takes precedence over auto-calculation)
+          if (mk in seeds) {
+            accumulated = seeds[mk];
+            autoMonths[mk] = { acum: seeds[mk], extras: totalExtras, goal, recordCount: monthRecs.length, isComplete, isCurrentMonth };
+          } else {
+            autoMonths[mk] = { acum: accumulated, extras: totalExtras, goal, recordCount: monthRecs.length, isComplete, isCurrentMonth };
+          }
+
+          m++;
+          if (m > 12) { m = 1; y++; }
+        }
+
+        return {
+          id: emp.id,
+          name: emp.name,
+          cpf: emp.cpf,
+          autoMonths,
+          hasAnySeed: true,
+          startMk,
+          hasDezSeed,
+        };
+      });
+
+      res.json({ success: true, employees });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
