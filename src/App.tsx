@@ -74,7 +74,7 @@ function Sidebar() {
     { title: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
     { title: 'Espelho de Ponto', path: '/ponto', icon: Calendar },
     { title: 'Funcionários', path: '/employees', icon: Users },
-    { title: 'Projeto PIN', path: '/pin', icon: Target },
+    { title: 'Saldos Acumulados', path: '/pin', icon: Target },
     { title: 'Upload Ponto', path: '/upload', icon: FileUp },
     { title: 'Configurações', path: '/settings', icon: Settings },
   ];

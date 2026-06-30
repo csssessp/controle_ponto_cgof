@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   Projeto PIN — Gestão de Saldos Acumulados 2026
+   Saldos Acumulados — Projeto PIN 2026
    Controla as horas extras dedicadas ao Projeto PIN por cada funcionário.
    Meta mensal: 40h (Jan/Fev/Mar/Mai) ou 48h (Abr/Jun/Jul — meses com
    compensação de feriado conforme Decreto nº 70.273/2025).
@@ -42,18 +42,8 @@ const parseHHMM = (s: string): number | null => {
 
 /* ── Metas mensais do Projeto PIN (Decreto nº 70.273/2025) ────────────────── */
 const PIN_GOALS: Record<string, number> = {
-  jan: 2400, // 40h
-  fev: 2400, // 40h
-  mar: 2400, // 40h
-  abr: 2880, // 48h (compensação feriado Tiradentes + Corpus Christi)
-  mai: 2400, // 40h
-  jun: 2880, // 48h
-  jul: 2880, // 48h
-  ago: 2400, // 40h
-  set: 2400, // 40h
-  out: 2400, // 40h
-  nov: 2400, // 40h
-  dez: 2400, // 40h
+  jan: 2400, fev: 2400, mar: 2400, abr: 2880, mai: 2400,
+  jun: 2880, jul: 2880, ago: 2400, set: 2400, out: 2400, nov: 2400, dez: 2400,
 };
 const MONTH_LABELS: Record<string, string> = {
   jan: "Jan/26", fev: "Fev/26", mar: "Mar/26",
@@ -146,6 +136,22 @@ const EXCEL_DATA: ExcelEntry[] = [
   { cpf:"",               nome:"THAIS CRISTINA NASCIMENTO BARBOSA",  area:"GCF",        saldoDezMin:null,  janAcumMin:null, fevAcumMin:45,   marAcumMin:1227, abrAcumMin:1471, maiAcumMin:2334,  isNegative:false },
 ];
 
+/* ── Month key helpers ───────────────────────────────────────────────────── */
+const MONTH_KEY_ABBR: Record<string, number> = {
+  JAN:1, FEV:2, MAR:3, ABR:4, MAI:5, JUN:6, JUL:7, AGO:8, SET:9, OUT:10, NOV:11, DEZ:12,
+};
+const MONTH_KEY_LABEL: Record<string, string> = {
+  JAN2026:"Jan/26", FEV2026:"Fev/26", MAR2026:"Mar/26", ABR2026:"Abr/26", MAI2026:"Mai/26",
+  JUN2026:"Jun/26", JUL2026:"Jul/26", AGO2026:"Ago/26", SET2026:"Set/26", OUT2026:"Out/26",
+  NOV2026:"Nov/26", DEZ2026:"Dez/26",
+  JAN2027:"Jan/27", FEV2027:"Fev/27", MAR2027:"Mar/27", ABR2027:"Abr/27",
+};
+function monthKeyToNum(k: string): number {
+  return parseInt(k.slice(3), 10) * 100 + (MONTH_KEY_ABBR[k.slice(0, 3)] ?? 0);
+}
+// Static months already shown in EXCEL_DATA columns — new DB months will be AFTER "MAI2026"
+const STATIC_MONTH_NUM = monthKeyToNum("MAI2026");
+
 /* ── Types ────────────────────────────────────────────────────────────────── */
 type DbEmployee = {
   id: string;
@@ -153,7 +159,8 @@ type DbEmployee = {
   cpf: string | null;
   registration: string | null;
   department: string | null;
-  pinSeedMinutes: number | null;
+  pinSeedMinutes: number | null;   // MAI2026 backward-compat
+  pinSeeds: Record<string, number>; // all imported months { "MAI2026": x, "JUN2026": y, ... }
 };
 
 type MatchedEntry = ExcelEntry & {
@@ -166,8 +173,15 @@ type EditState = { minutes: string; open: boolean };
 /* ── Component ────────────────────────────────────────────────────────────── */
 export default function PinProject() {
   const [dbEmps, setDbEmps]         = useState<DbEmployee[]>([]);
+  const [dbMonthKeys, setDbMonthKeys] = useState<string[]>([]); // extra months from DB (beyond MAI2026)
   const [loading, setLoading]       = useState(true);
   const [importing, setImporting]   = useState(false);
+  // "Importar mês" modal
+  const [showImportMonth, setShowImportMonth] = useState(false);
+  const [importMonthKey, setImportMonthKey]   = useState("JUN2026");
+  const [importMonthData, setImportMonthData] = useState<Record<string, string>>({}); // empId → hh:mm string
+  const [importingMonth, setImportingMonth]   = useState(false);
+
   const [search, setSearch]         = useState("");
   const [filterArea, setFilterArea] = useState("all");
   const [filterStatus, setFilterStatus] = useState<"all" | "ok" | "deficit" | "sem_dados">("all");
@@ -183,9 +197,16 @@ export default function PinProject() {
     try {
       const r = await fetch("/api/pin-project/balances");
       const j = await r.json();
-      if (j.success) setDbEmps(j.employees);
+      if (j.success) {
+        setDbEmps(j.employees);
+        // Dynamic month keys from DB that are AFTER May 2026
+        const extraKeys: string[] = (j.monthKeys ?? []).filter(
+          (k: string) => monthKeyToNum(k) > STATIC_MONTH_NUM
+        );
+        setDbMonthKeys(extraKeys);
+      }
     } catch {
-      toast.error("Erro ao carregar funcionários PIN");
+      toast.error("Erro ao carregar saldos acumulados PIN");
     } finally {
       setLoading(false);
     }
@@ -195,18 +216,18 @@ export default function PinProject() {
 
   /* Match Excel entries to DB employees */
   const matched: MatchedEntry[] = useMemo(() => {
+    const normCpf  = (s: string) => s.replace(/\D/g, "");
+    const normName = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
     return EXCEL_DATA.map(ex => {
       let dbEmp: DbEmployee | null = null;
       if (ex.cpf) {
-        // Match by CPF (normalize – remove dots/dashes for comparison)
-        const normCpf = (s: string) => s.replace(/\D/g, "");
         dbEmp = dbEmps.find(d => d.cpf && normCpf(d.cpf) === normCpf(ex.cpf)) ?? null;
       }
       if (!dbEmp) {
-        // Fallback: match by normalized name
-        const normName = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
         dbEmp = dbEmps.find(d => normName(d.name) === normName(ex.nome)) ?? null;
       }
+      // Ensure pinSeeds always exists
+      if (dbEmp && !dbEmp.pinSeeds) dbEmp = { ...dbEmp, pinSeeds: {} };
       return { ...ex, dbEmployee: dbEmp, matched: !!dbEmp };
     });
   }, [dbEmps]);
@@ -271,6 +292,51 @@ export default function PinProject() {
       toast.error("Erro ao importar saldos");
     } finally {
       setImporting(false);
+    }
+  };
+
+  /* Parse HH:MM or -HH:MM string used in the import month modal */
+  const parseColonHHMM = (s: string): number | null => {
+    const m = s.trim().match(/^(-?)(\d+):(\d{2})$/);
+    if (!m) return null;
+    const sign = m[1] ? -1 : 1;
+    return sign * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10));
+  };
+
+  /* Import a specific future month */
+  const handleImportMonth = async () => {
+    const toImport = matched.filter(e => {
+      if (!e.dbEmployee) return false;
+      const raw = importMonthData[e.dbEmployee.id];
+      return raw && raw.trim();
+    });
+    if (toImport.length === 0) { toast.error("Preencha ao menos um saldo para importar."); return; }
+    setImportingMonth(true);
+    try {
+      const entries = toImport.map(e => {
+        const raw = importMonthData[e.dbEmployee!.id] ?? "";
+        const min = parseColonHHMM(raw);
+        return { employeeId: e.dbEmployee!.id, minutes: min ?? 0, nome: e.nome };
+      }).filter(e => e.minutes !== 0);
+
+      const r = await fetch("/api/pin-project/import-month", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ monthKey: importMonthKey, entries }),
+      });
+      const j = await r.json();
+      if (j.success) {
+        toast.success(`${j.imported} saldos de ${MONTH_KEY_LABEL[importMonthKey] ?? importMonthKey} importados!`);
+        setShowImportMonth(false);
+        setImportMonthData({});
+        await loadDbEmployees();
+      } else {
+        toast.error(j.error ?? "Erro na importação");
+      }
+    } catch {
+      toast.error("Erro de conexão");
+    } finally {
+      setImportingMonth(false);
     }
   };
 
@@ -349,14 +415,19 @@ export default function PinProject() {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <Target className="w-6 h-6 text-blue-600" />
-            <h1 className="text-2xl font-bold text-foreground">Projeto PIN</h1>
-            <Badge variant="outline" className="text-blue-700 border-blue-200 bg-blue-50 text-xs">2026</Badge>
+            <h1 className="text-2xl font-bold text-foreground">Saldos Acumulados</h1>
+            <Badge variant="outline" className="text-blue-700 border-blue-200 bg-blue-50 text-xs">Projeto PIN 2026</Badge>
           </div>
           <p className="text-sm text-muted-foreground">
-            Controle de horas extras dedicadas ao Projeto PIN — saldos acumulados Jan–Mai/2026
+            Saldos acumulados do Projeto PIN por funcionário — atualizado conforme a planilha mensal
           </p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Base: planilha <strong>PIN - HORAS AREAS 2026.xlsx</strong> · Decreto nº 70.273/2025
+            Base: <strong>PIN - HORAS AREAS 2026.xlsx</strong> · Decreto nº 70.273/2025
+            {dbMonthKeys.length > 0 && (
+              <span className="ml-2 text-emerald-600 font-medium">
+                + {dbMonthKeys.map(k => MONTH_KEY_LABEL[k] ?? k).join(", ")} importados
+              </span>
+            )}
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
@@ -366,9 +437,12 @@ export default function PinProject() {
           <Button variant="outline" size="sm" className="rounded-xl gap-2 text-xs" onClick={loadDbEmployees} disabled={loading}>
             <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} /> Atualizar
           </Button>
+          <Button variant="outline" size="sm" className="rounded-xl gap-2 text-xs border-emerald-300 text-emerald-700 hover:bg-emerald-50" onClick={() => setShowImportMonth(true)}>
+            <BarChart3 className="w-3.5 h-3.5" /> Importar Mês Novo
+          </Button>
           <Button size="sm" className="rounded-xl gap-2 text-xs bg-blue-600 hover:bg-blue-700 text-white" onClick={handleImportAll} disabled={importing || loading}>
             {importing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-            Importar Planilha para Sistema
+            Importar Jan–Mai/2026
           </Button>
         </div>
       </div>
@@ -470,9 +544,16 @@ export default function PinProject() {
         <CardHeader className="pb-0 px-6 pt-5">
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="text-base font-bold">Saldos Acumulados — Jan a Mai/2026</CardTitle>
+              <CardTitle className="text-base font-bold">
+                Saldos Acumulados — Jan a Mai/2026
+                {dbMonthKeys.length > 0 && (
+                  <span className="ml-2 text-xs font-normal text-emerald-600">
+                    + {dbMonthKeys.map(k => MONTH_KEY_LABEL[k] ?? k).join(", ")}
+                  </span>
+                )}
+              </CardTitle>
               <CardDescription className="mt-0.5 text-xs">
-                Fonte: planilha PIN — saldo negativo = em déficit (célula vermelha na planilha original)
+                Saldo negativo = funcionário em déficit (célula vermelha na planilha original) · ★ = mês com meta de 48h
               </CardDescription>
             </div>
             <div className="flex gap-1 text-xs text-muted-foreground items-center">
@@ -507,7 +588,16 @@ export default function PinProject() {
                   <th className="px-3 py-2.5 text-center font-semibold text-foreground bg-blue-50/60">
                     Mai/26 Acumulado<br/><span className="text-[9px] font-normal opacity-60">meta 40h</span>
                   </th>
-                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Sistema</th>
+                  {/* Dynamic columns for months after May 2026 */}
+                  {dbMonthKeys.map(mk => (
+                    <th key={mk} className="px-3 py-2.5 text-center font-semibold text-emerald-700 bg-emerald-50/40">
+                      {MONTH_KEY_LABEL[mk] ?? mk}<br/>
+                      <span className="text-[9px] font-normal opacity-60">
+                        meta {PIN_GOALS[mk.slice(0,3).toLowerCase()] ? PIN_GOALS[mk.slice(0,3).toLowerCase()] / 60 + "h" : "40h"}
+                      </span>
+                    </th>
+                  ))}
+                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Sistema (Mai)</th>
                   <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Ação</th>
                 </tr>
               </thead>
@@ -567,7 +657,21 @@ export default function PinProject() {
                           </div>
                         ) : <span className="text-muted-foreground/40 text-[10px]">Sem dados</span>}
                       </td>
-                      {/* Sistema (valor importado) */}
+                      {/* Dynamic month cells (Jun, Jul, ...) */}
+                      {dbMonthKeys.map(mk => {
+                        const mkMin = e.dbEmployee?.pinSeeds?.[mk] ?? null;
+                        return (
+                          <td key={mk} className="px-3 py-2 text-center bg-emerald-50/20">
+                            {mkMin !== null ? (
+                              <MonthBar min={mkMin} goal={PIN_GOALS[mk.slice(0,3).toLowerCase()] ?? 2400} />
+                            ) : (
+                              <span className="text-[10px] text-muted-foreground/30">—</span>
+                            )}
+                          </td>
+                        );
+                      })}
+
+                      {/* Sistema (Mai/26 importado) */}
                       <td className="px-3 py-2 text-center">
                         {!e.matched ? (
                           <span className="text-[10px] text-orange-500">Não vinculado</span>
@@ -661,6 +765,104 @@ export default function PinProject() {
           </CardContent>
         </Card>
       )}
+
+      {/* ── Importar Mês Novo modal ───────────────────────────────────────────── */}
+      <AnimatePresence>
+        {showImportMonth && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+            onClick={e => { if (e.target === e.currentTarget) setShowImportMonth(false); }}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-card rounded-[24px] shadow-2xl border border-border w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden"
+            >
+              <div className="px-6 py-5 border-b border-border/60 flex items-center justify-between shrink-0">
+                <div>
+                  <h2 className="text-base font-bold flex items-center gap-2">
+                    <BarChart3 className="w-4 h-4 text-emerald-600" /> Importar Mês Novo
+                  </h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Insira os saldos acumulados de um novo mês para cada funcionário
+                  </p>
+                </div>
+                <Button variant="ghost" size="sm" className="rounded-xl" onClick={() => setShowImportMonth(false)}>
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+
+              <div className="px-6 py-4 border-b border-border/40 flex items-center gap-3 shrink-0">
+                <label className="text-xs font-semibold text-muted-foreground">Mês de referência:</label>
+                <select
+                  value={importMonthKey}
+                  onChange={e => setImportMonthKey(e.target.value)}
+                  className="text-sm rounded-xl border border-border bg-background px-3 py-2 h-9 focus:outline-none focus:ring-2 focus:ring-primary/20"
+                >
+                  {["JUN2026","JUL2026","AGO2026","SET2026","OUT2026","NOV2026","DEZ2026"].map(k => (
+                    <option key={k} value={k}>{MONTH_KEY_LABEL[k] ?? k} — meta {(PIN_GOALS[k.slice(0,3).toLowerCase()] ?? 2400) / 60}h</option>
+                  ))}
+                </select>
+                <span className="text-xs text-muted-foreground ml-auto">
+                  Formato: <code className="bg-muted px-1 py-0.5 rounded text-[10px]">HH:MM</code> ou <code className="bg-muted px-1 py-0.5 rounded text-[10px]">-HH:MM</code>
+                </span>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-6 py-4 space-y-1.5">
+                {matched.filter(e => e.matched && e.dbEmployee).map(e => (
+                  <div key={e.dbEmployee!.id} className="flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <span className="text-xs font-medium truncate block">{e.nome}</span>
+                      <span className="text-[10px] text-muted-foreground">{e.area}</span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground w-20 text-right shrink-0">
+                      Mai/26: <span className={cn("font-mono font-semibold", (e.maiAcumMin ?? 0) < 0 ? "text-red-500" : "text-emerald-600")}>
+                        {e.maiAcumMin !== null ? toHHMMRaw(e.maiAcumMin) : "—"}
+                      </span>
+                    </div>
+                    <Input
+                      type="text"
+                      placeholder="00:00"
+                      value={importMonthData[e.dbEmployee!.id] ?? ""}
+                      onChange={ev => setImportMonthData(p => ({ ...p, [e.dbEmployee!.id]: ev.target.value }))}
+                      className="w-28 h-8 text-xs font-mono rounded-xl text-center"
+                    />
+                  </div>
+                ))}
+                {matched.filter(e => e.matched && e.dbEmployee).length === 0 && (
+                  <p className="text-sm text-muted-foreground py-8 text-center">
+                    Nenhum funcionário vinculado. Importe Jan–Mai/2026 primeiro.
+                  </p>
+                )}
+              </div>
+
+              <div className="px-6 py-4 border-t border-border/40 flex items-center justify-between shrink-0">
+                <p className="text-xs text-muted-foreground">
+                  {Object.values(importMonthData).filter((v): v is string => typeof v === "string" && v.trim() !== "").length} funcionários preenchidos
+                </p>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" className="rounded-xl" onClick={() => setShowImportMonth(false)}>
+                    Cancelar
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="rounded-xl gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
+                    onClick={handleImportMonth}
+                    disabled={importingMonth}
+                  >
+                    {importingMonth ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                    Importar {MONTH_KEY_LABEL[importMonthKey] ?? importMonthKey}
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
     </motion.div>
   );

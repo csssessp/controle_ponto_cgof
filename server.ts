@@ -663,8 +663,23 @@ export async function createApp() {
         type: r.type,
         created_at: r.created_at ?? r.createdAt,
       }));
-      const total = entries.reduce((s: number, r: any) => s + (r.minutes || 0), 0);
-      res.json({ success: true, entries, totalMinutes: total });
+      // If PIN_SEED_* entries exist, use the latest one as the authoritative balance base.
+      // All entries before the latest PIN_SEED date are superseded by it.
+      const pinSeeds = entries
+        .filter((e: any) => e.type?.startsWith("PIN_SEED_"))
+        .sort((a: any, b: any) => b.date.localeCompare(a.date));
+
+      if (pinSeeds.length > 0) {
+        const latestSeed = pinSeeds[0];
+        const laterEntries = entries.filter(
+          (e: any) => !e.type?.startsWith("PIN_SEED_") && e.date > latestSeed.date
+        );
+        const total = latestSeed.minutes + laterEntries.reduce((s: number, e: any) => s + (e.minutes || 0), 0);
+        res.json({ success: true, entries, totalMinutes: total, pinSeedPresent: true, pinSeedDate: latestSeed.date });
+      } else {
+        const total = entries.reduce((s: number, r: any) => s + (r.minutes || 0), 0);
+        res.json({ success: true, entries, totalMinutes: total, pinSeedPresent: false });
+      }
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -755,38 +770,62 @@ export async function createApp() {
     }
   });
 
-  // ── PIN Project Balances ─────────────────────────────────────────────────
+  // ── PIN Project / Saldos Acumulados ──────────────────────────────────────
   const PIN_SEED_TYPE = "PIN_SEED_MAI2026";
 
-  // GET all PIN employees with their accumulated balance (seed)
+  // Monthly PIN goals (minutes) — Decreto nº 70.273/2025
+  // Apr, Jun, Jul = 48h (compensação feriado); all others = 40h
+  const PIN_MONTH_GOALS: Record<number, number> = {
+    1: 2400, 2: 2400, 3: 2400, 4: 2880, 5: 2400,
+    6: 2880, 7: 2880, 8: 2400, 9: 2400, 10: 2400, 11: 2400, 12: 2400,
+  };
+
+  // Month abbreviations used in PIN_SEED_* type names
+  const PIN_MONTH_ABBR: Record<number, string> = {
+    1: "JAN", 2: "FEV", 3: "MAR", 4: "ABR", 5: "MAI",
+    6: "JUN", 7: "JUL", 8: "AGO", 9: "SET", 10: "OUT", 11: "NOV", 12: "DEZ",
+  };
+
+  // GET all active employees with their PIN_SEED_* balances (all months)
   app.get("/api/pin-project/balances", async (_req, res) => {
     try {
-      // Fetch all PIN employees
+      // All active employees (no pin_project filter — any employee can be in the spreadsheet)
       const { data: emps, error: empErr } = await supabase
         .from("employees")
         .select("id,name,cpf,registration,departments(name)")
-        .eq("pin_project", true)
         .eq("status", "ATIVO")
         .order("name");
       if (empErr) throw new Error(empErr.message);
 
-      // Fetch all PIN seed bank entries
       const empIds = (emps || []).map((e: any) => e.id);
       let seeds: any[] = [];
       if (empIds.length > 0) {
         const { data: bankData } = await supabase
           .from(BANK_TABLE)
           .select("*")
-          .eq("type", PIN_SEED_TYPE)
+          .like("type", "PIN_SEED_%")
           .in(BANK_EMP_COL, empIds);
         seeds = bankData || [];
       }
 
-      const seedMap: Record<string, number> = {};
+      // Build map: { employeeId: { "MAI2026": minutes, "JUN2026": minutes, ... } }
+      const seedMap: Record<string, Record<string, number>> = {};
       for (const s of seeds) {
         const eid = s.employee_id ?? s.employeeId;
-        seedMap[eid] = s.minutes;
+        const mKey = (s.type as string).replace("PIN_SEED_", "");
+        if (!seedMap[eid]) seedMap[eid] = {};
+        seedMap[eid][mKey] = s.minutes;
       }
+
+      // All unique month keys that exist in the DB, sorted chronologically
+      const monthNumOf = (k: string) => {
+        const ABBR: Record<string, number> = { JAN:1,FEV:2,MAR:3,ABR:4,MAI:5,JUN:6,JUL:7,AGO:8,SET:9,OUT:10,NOV:11,DEZ:12 };
+        const yr = parseInt(k.slice(3), 10);
+        const mo = ABBR[k.slice(0, 3)] ?? 0;
+        return yr * 100 + mo;
+      };
+      const allMonthKeys = [...new Set(seeds.map((s: any) => (s.type as string).replace("PIN_SEED_", "")))]
+        .sort((a, b) => monthNumOf(a) - monthNumOf(b));
 
       const result = (emps || []).map((e: any) => ({
         id: e.id,
@@ -794,10 +833,12 @@ export async function createApp() {
         cpf: e.cpf,
         registration: e.registration,
         department: e.departments?.name ?? null,
-        pinSeedMinutes: seedMap[e.id] ?? null,
+        pinSeeds: seedMap[e.id] ?? {},
+        // backward-compat: May 2026 seed
+        pinSeedMinutes: seedMap[e.id]?.["MAI2026"] ?? null,
       }));
 
-      res.json({ success: true, employees: result });
+      res.json({ success: true, employees: result, monthKeys: allMonthKeys });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -839,7 +880,7 @@ export async function createApp() {
     }
   });
 
-  // POST bulk import PIN seed balances
+  // POST bulk import PIN seed balances (for May 2026 initial import from spreadsheet)
   app.post("/api/pin-project/import-bulk", async (req, res) => {
     try {
       const { entries } = req.body as { entries: Array<{ employeeId: string; minutes: number; nome: string }> };
@@ -852,16 +893,14 @@ export async function createApp() {
           const min = Number(entry.minutes);
           if (isNaN(min)) { results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: false, error: "Minutos inválidos" }); continue; }
 
-          // Delete existing seed
           await supabase.from(BANK_TABLE).delete().eq(BANK_EMP_COL, entry.employeeId).eq("type", PIN_SEED_TYPE);
 
-          // Insert new
           const { error } = await supabase.from(BANK_TABLE).insert([{
             [BANK_EMP_COL]: entry.employeeId,
             minutes: min,
             date: "2026-05-31",
             type: PIN_SEED_TYPE,
-            description: "Saldo acumulado PIN Projeto Jan–Mai/2026 (planilha)",
+            description: "Saldo acumulado PIN — Jan a Mai/2026 (planilha)",
           }]);
           results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: !error, error: error?.message });
         } catch (e: any) {
@@ -874,6 +913,56 @@ export async function createApp() {
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // POST import a specific month's accumulated balance for all employees
+  // Body: { monthKey: "JUN2026", entries: [{ employeeId, minutes, nome }] }
+  app.post("/api/pin-project/import-month", async (req, res) => {
+    try {
+      const { monthKey, entries } = req.body as {
+        monthKey: string;
+        entries: Array<{ employeeId: string; minutes: number; nome: string }>;
+      };
+      if (!monthKey || !/^[A-Z]{3}\d{4}$/.test(monthKey)) return res.status(400).json({ error: "monthKey inválido (ex: JUN2026)" });
+      if (!Array.isArray(entries) || entries.length === 0) return res.status(400).json({ error: "Nenhuma entrada fornecida" });
+
+      const seedType = `PIN_SEED_${monthKey}`;
+      // Determine date from month key (last day of the month)
+      const ABBR_TO_M: Record<string, number> = { JAN:1,FEV:2,MAR:3,ABR:4,MAI:5,JUN:6,JUL:7,AGO:8,SET:9,OUT:10,NOV:11,DEZ:12 };
+      const mo = ABBR_TO_M[monthKey.slice(0, 3)] ?? 1;
+      const yr = parseInt(monthKey.slice(3), 10);
+      const lastDay = new Date(yr, mo, 0).getDate();
+      const seedDate = `${yr}-${String(mo).padStart(2,"0")}-${String(lastDay).padStart(2,"0")}`;
+
+      const results: Array<{ employeeId: string; nome: string; ok: boolean; error?: string }> = [];
+      for (const entry of entries) {
+        try {
+          const min = Number(entry.minutes);
+          if (isNaN(min)) { results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: false, error: "Minutos inválidos" }); continue; }
+
+          await supabase.from(BANK_TABLE).delete().eq(BANK_EMP_COL, entry.employeeId).eq("type", seedType);
+          const { error } = await supabase.from(BANK_TABLE).insert([{
+            [BANK_EMP_COL]: entry.employeeId,
+            minutes: min,
+            date: seedDate,
+            type: seedType,
+            description: `Saldo acumulado PIN — Jan a ${monthKey.slice(0,3)}/${monthKey.slice(5)} (planilha)`,
+          }]);
+          results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: !error, error: error?.message });
+        } catch (e: any) {
+          results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: false, error: e.message });
+        }
+      }
+      const ok = results.filter(r => r.ok).length;
+      res.json({ success: true, monthKey, seedDate, imported: ok, total: results.length, results });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET PIN month goals
+  app.get("/api/pin-project/goals", (_req, res) => {
+    res.json({ success: true, goals: PIN_MONTH_GOALS, monthAbbr: PIN_MONTH_ABBR });
   });
 
   // DELETE PIN seed balance for one employee

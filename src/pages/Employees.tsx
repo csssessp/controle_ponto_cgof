@@ -122,6 +122,8 @@ export default function Employees() {
   const [bankTotal, setBankTotal] = useState(0);
   const [bankLoading, setBankLoading] = useState(false);
   const [bankComputedTotal, setBankComputedTotal] = useState<number | null>(null);
+  const [bankPinGoal, setBankPinGoal] = useState(2400); // current-month PIN goal in minutes
+  const [bankPinSeedPresent, setBankPinSeedPresent] = useState(false);
   const [bMin, setBMin] = useState("");
   const [bDesc, setBDesc] = useState("");
   const [bDate, setBDate] = useState("");
@@ -158,24 +160,36 @@ export default function Employees() {
   useEffect(() => { loadAll(); }, [loadAll]);
 
   /* ── Actions ────────────────────────────────────────────────────────────── */
+  // Monthly PIN goals (minutes) per Decreto nº 70.273/2025
+  const PIN_MONTH_GOALS: Record<number, number> = {
+    1: 2400, 2: 2400, 3: 2400, 4: 2880, 5: 2400,
+    6: 2880, 7: 2880, 8: 2400, 9: 2400, 10: 2400, 11: 2400, 12: 2400,
+  };
+
   const openEdit = async (emp: Employee, tab = "personal") => {
     setEditTarget(emp);
     setEditForm({ ...emp, admission_date: emp.admission_date?.substring(0, 10) ?? "" });
     setEditTab(tab);
     setBankEntries([]); setBankTotal(0); setBankLoading(true); setBankComputedTotal(null);
+    setBankPinSeedPresent(false);
     try {
       const now = new Date();
+      const cy = now.getFullYear(), cm = now.getMonth() + 1;
+
       const [bankRes, attRes] = await Promise.all([
         fetch("/api/time-bank/" + emp.id).then(x => x.json()),
-        fetch(`/api/attendance/${emp.id}?year=${now.getFullYear()}&month=${now.getMonth() + 1}`).then(x => x.json()),
+        fetch(`/api/attendance/${emp.id}?year=${cy}&month=${cm}`).then(x => x.json()),
       ]);
 
       const entries: any[] = bankRes.entries || [];
-      const seedTotal: number = bankRes.totalMinutes || 0;
+      const seedTotal: number = bankRes.totalMinutes || 0;  // already PIN-seed-aware (server handles this)
+      const pinSeedPresent: boolean = bankRes.pinSeedPresent ?? false;
+      setBankPinSeedPresent(pinSeedPresent);
+
       setBankEntries(entries);
       setBankTotal(seedTotal);
 
-      // Determine cutoff from latest entry date
+      // Cutoff = latest entry date
       let cutoff: { year: number; month: number } | null = null;
       if (entries.length) {
         const latest = entries.map((e: any) => (e.date ?? "").substring(0, 10)).filter(Boolean).sort().at(-1);
@@ -185,7 +199,7 @@ export default function Employees() {
         }
       }
 
-      // Compute current month bank from attendance records
+      // Current month bank contribution from attendance
       const records: any[] = attRes.records || [];
       const expectedWork = emp.schedules?.expected_work ?? 480;
       const lunchMin = emp.schedules?.lunch_minutes ?? 60;
@@ -199,11 +213,15 @@ export default function Employees() {
         }
       }
 
-      // Apply cutoff logic (same as TimeCard)
-      const cy = now.getFullYear(), cm = now.getMonth() + 1;
       const afterCutoff = !cutoff || (cy > cutoff.year || (cy === cutoff.year && cm >= cutoff.month));
       const rawTotal = afterCutoff ? seedTotal + monthBank : seedTotal;
-      const realTotal = rawTotal - (emp.pin_project ? 2400 : 0);
+
+      // Use the correct monthly PIN goal (not a hardcoded 40h)
+      // If PIN_SEED is present: seed already accounts for all past PIN deductions → only deduct current month goal
+      // If no PIN_SEED: fall back to 40h deduction (legacy behaviour)
+      const currentMonthGoal = PIN_MONTH_GOALS[cm] ?? 2400;
+      setBankPinGoal(currentMonthGoal);
+      const realTotal = rawTotal - (emp.pin_project ? currentMonthGoal : 0);
       setBankComputedTotal(realTotal);
     } catch {
       setBankComputedTotal(null);
@@ -1262,7 +1280,9 @@ export default function Employees() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-muted-foreground mb-1">
-                          Saldo Real Acumulado
+                          Saldo PIN Acumulado {bankPinSeedPresent && editTarget?.pin_project && (
+                            <span className="ml-1 px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold normal-case">planilha importada</span>
+                          )}
                         </p>
                         {bankComputedTotal !== null ? (
                           <p className={cn(
@@ -1275,14 +1295,20 @@ export default function Employees() {
                           <p className="text-sm text-muted-foreground mt-1">Calculando...</p>
                         )}
                         <p className="text-[11px] text-muted-foreground mt-1.5">
-                          Saldo base + competência atual{editTarget?.pin_project ? " − 40h (Projeto PIN)" : ""}
+                          {editTarget?.pin_project
+                            ? bankPinSeedPresent
+                              ? `Saldo PIN acumulado + mês atual − ${bankPinGoal / 60}h (meta PIN)`
+                              : `Saldo base + mês atual − ${bankPinGoal / 60}h (meta PIN)`
+                            : "Saldo base + competência atual"}
                         </p>
                       </div>
                     </div>
                     {/* Breakdown row */}
                     <div className="grid grid-cols-3 gap-3 mt-4 pt-4 border-t border-current/10">
                       <div>
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Saldo Base</p>
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">
+                          {bankPinSeedPresent && editTarget?.pin_project ? "Saldo PIN (planilha)" : "Saldo Base"}
+                        </p>
                         <p className="text-sm font-mono font-bold">{hhmm(bankTotal)}</p>
                       </div>
                       <div>
@@ -1291,8 +1317,11 @@ export default function Employees() {
                       </div>
                       {editTarget?.pin_project && (
                         <div>
-                          <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Dedução PIN</p>
-                          <p className="text-sm font-mono font-bold text-amber-600">−40:00</p>
+                          <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Meta PIN / mês</p>
+                          <p className="text-sm font-mono font-bold text-amber-600">
+                            −{String(Math.floor(bankPinGoal / 60)).padStart(2,"0")}:{String(bankPinGoal % 60).padStart(2,"0")}
+                            {bankPinGoal === 2880 ? " ★" : ""}
+                          </p>
                         </div>
                       )}
                     </div>
