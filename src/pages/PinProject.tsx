@@ -195,6 +195,26 @@ export default function PinProject() {
   const [importMonthData, setImportMonthData] = useState<Record<string, string>>({}); // empId → hh:mm string
   const [importingMonth, setImportingMonth]   = useState(false);
 
+  // Manual employee links for entries that fail auto-match (cpf|nome → employeeId), persisted locally
+  const [manualLinks, setManualLinks] = useState<Record<string, string>>(() => {
+    try {
+      const raw = localStorage.getItem("pin_manual_links");
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  });
+  const [linkPickerKey, setLinkPickerKey] = useState<string | null>(null); // which row's link-picker is open
+  const [linkPickerSearch, setLinkPickerSearch] = useState("");
+
+  const setManualLink = (linkKey: string, employeeId: string) => {
+    setManualLinks(prev => {
+      const next = { ...prev, [linkKey]: employeeId };
+      try { localStorage.setItem("pin_manual_links", JSON.stringify(next)); } catch {}
+      return next;
+    });
+    setLinkPickerKey(null);
+    setLinkPickerSearch("");
+  };
+
   const [search, setSearch]         = useState("");
   const [filterArea, setFilterArea] = useState("all");
   const [filterStatus, setFilterStatus] = useState<"all" | "ok" | "deficit" | "sem_dados">("all");
@@ -251,7 +271,8 @@ export default function PinProject() {
   /* Match Excel entries to DB employees */
   const matched: MatchedEntry[] = useMemo(() => {
     const normCpf  = (s: string) => s.replace(/\D/g, "");
-    const normName = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+    const stripAccents = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+    const normName = (s: string) => stripAccents(s).toLowerCase().replace(/\s+/g, " ").trim();
     return EXCEL_DATA.map(ex => {
       let dbEmp: DbEmployee | null = null;
       if (ex.cpf) {
@@ -260,11 +281,16 @@ export default function PinProject() {
       if (!dbEmp) {
         dbEmp = dbEmps.find(d => normName(d.name) === normName(ex.nome)) ?? null;
       }
+      // Fallback: manual link set by admin (saved to localStorage)
+      const linkKey = ex.cpf + "|" + ex.nome;
+      if (!dbEmp && manualLinks[linkKey]) {
+        dbEmp = dbEmps.find(d => d.id === manualLinks[linkKey]) ?? null;
+      }
       // Ensure pinSeeds always exists
       if (dbEmp && !dbEmp.pinSeeds) dbEmp = { ...dbEmp, pinSeeds: {} };
       return { ...ex, dbEmployee: dbEmp, matched: !!dbEmp };
     });
-  }, [dbEmps]);
+  }, [dbEmps, manualLinks]);
 
   /* Merged month keys: union of DB imported months + auto-calc months (after MAI2026) */
   const allDynamicMonthKeys = useMemo(() => {
@@ -382,6 +408,31 @@ export default function PinProject() {
       toast.error("Erro de conexão");
     } finally {
       setImportingMonth(false);
+    }
+  };
+
+  /* Manually link an unmatched Excel row to a DB employee, then import its balance immediately */
+  const handleManualLink = async (ex: MatchedEntry, employeeId: string) => {
+    const linkKey = ex.cpf + "|" + ex.nome;
+    setManualLink(linkKey, employeeId);
+    if (ex.maiAcumMin === null) return;
+    try {
+      const r = await fetch("/api/pin-project/import-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entries: [{ employeeId, minutes: ex.maiAcumMin, nome: ex.nome, saldoDezMin: ex.saldoDezMin ?? undefined }],
+        }),
+      });
+      const j = await r.json();
+      if (j.success) {
+        toast.success(`${ex.nome} vinculado e saldo importado!`);
+        await loadDbEmployees();
+      } else {
+        toast.error(j.error ?? "Vinculado, mas falha ao importar saldo");
+      }
+    } catch {
+      toast.error("Vinculado, mas falha ao importar saldo");
     }
   };
 
@@ -771,8 +822,8 @@ export default function PinProject() {
                         })()}
                       </td>
                       {/* Ação */}
-                      <td className="px-3 py-2 text-center">
-                        {e.matched && (
+                      <td className="px-3 py-2 text-center relative">
+                        {e.matched ? (
                           isEditOpen ? (
                             <div className="flex items-center gap-1 justify-center">
                               <input
@@ -803,6 +854,47 @@ export default function PinProject() {
                               <Edit2 className="w-3 h-3" /> Editar
                             </Button>
                           )
+                        ) : (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-6 px-2 text-[10px] gap-1 rounded-lg border-orange-300 text-orange-600 hover:bg-orange-50"
+                              onClick={() => setLinkPickerKey(linkPickerKey === key ? null : key)}
+                            >
+                              <Users className="w-3 h-3" /> Vincular
+                            </Button>
+                            {linkPickerKey === key && (
+                              <div className="absolute right-0 top-full mt-1 z-20 w-64 bg-card border border-border rounded-xl shadow-xl p-2 text-left">
+                                <Input
+                                  autoFocus
+                                  value={linkPickerSearch}
+                                  onChange={ev => setLinkPickerSearch(ev.target.value)}
+                                  placeholder="Buscar funcionário..."
+                                  className="h-7 text-[11px] rounded-lg mb-1.5"
+                                />
+                                <div className="max-h-48 overflow-y-auto space-y-0.5">
+                                  {dbEmps
+                                    .filter(d => d.name.toLowerCase().includes(linkPickerSearch.toLowerCase()))
+                                    .slice(0, 30)
+                                    .map(d => (
+                                      <button
+                                        key={d.id}
+                                        type="button"
+                                        className="w-full text-left px-2 py-1 text-[11px] rounded-lg hover:bg-muted/60 truncate"
+                                        onClick={() => handleManualLink(e, d.id)}
+                                        title={d.name}
+                                      >
+                                        {d.name}
+                                      </button>
+                                    ))}
+                                  {dbEmps.filter(d => d.name.toLowerCase().includes(linkPickerSearch.toLowerCase())).length === 0 && (
+                                    <p className="text-[10px] text-muted-foreground px-2 py-1">Nenhum funcionário encontrado</p>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </>
                         )}
                       </td>
                     </tr>

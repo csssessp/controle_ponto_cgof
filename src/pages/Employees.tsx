@@ -1280,7 +1280,8 @@ export default function Employees() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-muted-foreground mb-1">
-                          Saldo PIN Acumulado {bankPinSeedPresent && editTarget?.pin_project && (
+                          {editTarget?.pin_project ? "Saldo PIN Acumulado" : "Banco de Horas"}{" "}
+                          {bankPinSeedPresent && editTarget?.pin_project && (
                             <span className="ml-1 px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold normal-case">planilha importada</span>
                           )}
                         </p>
@@ -1299,7 +1300,7 @@ export default function Employees() {
                             ? bankPinSeedPresent
                               ? `Saldo PIN acumulado + mês atual − ${bankPinGoal / 60}h (meta PIN)`
                               : `Saldo base + mês atual − ${bankPinGoal / 60}h (meta PIN)`
-                            : "Saldo base + competência atual"}
+                            : "Banco de horas geral — não vinculado ao Projeto PIN"}
                         </p>
                       </div>
                     </div>
