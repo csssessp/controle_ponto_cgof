@@ -227,23 +227,31 @@ export default function PinProject() {
   /* load DB employees + auto-calculated balances from attendance records */
   const loadDbEmployees = useCallback(async () => {
     setLoading(true);
+    // Core employee list + manual/imported balances — this MUST succeed for the page to work
     try {
-      const [balRes, autoRes] = await Promise.all([
-        fetch("/api/pin-project/balances"),
-        fetch("/api/pin-project/auto-balances"),
-      ]);
-      const [j, ja] = await Promise.all([balRes.json(), autoRes.json()]);
-
+      const r = await fetch("/api/pin-project/balances");
+      const j = await r.json();
       if (j.success) {
         setDbEmps(j.employees);
         const extraKeys: string[] = (j.monthKeys ?? []).filter(
           (k: string) => monthKeyToNum(k) > STATIC_MONTH_NUM
         );
         setDbMonthKeys(extraKeys);
+      } else {
+        toast.error(j.error ?? "Erro ao carregar funcionários do Projeto PIN");
       }
+    } catch {
+      toast.error("Erro ao carregar saldos acumulados PIN");
+    } finally {
+      setLoading(false);
+    }
 
+    // Auto-calculated balances (espelho de ponto) — secondary enhancement.
+    // A failure here must NEVER block the core list/matching/editing above.
+    try {
+      const ar = await fetch("/api/pin-project/auto-balances");
+      const ja = await ar.json();
       if (ja.success && Array.isArray(ja.employees)) {
-        // Build map: empId → monthKey → AutoMonthData
         const map: Record<string, Record<string, AutoMonthData>> = {};
         const mkSet = new Set<string>();
         for (const emp of ja.employees as any[]) {
@@ -255,14 +263,11 @@ export default function PinProject() {
           }
         }
         setAutoBalances(map);
-        // Merge auto month keys with db month keys (union, sorted)
         const merged = Array.from(mkSet).sort((a, b) => monthKeyToNum(a) - monthKeyToNum(b));
         setAutoMonthKeys(merged);
       }
     } catch {
-      toast.error("Erro ao carregar saldos acumulados PIN");
-    } finally {
-      setLoading(false);
+      // Silent: auto-calculated columns just won't show — core page remains functional
     }
   }, []);
 

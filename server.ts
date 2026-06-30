@@ -962,12 +962,13 @@ export async function createApp() {
       const empIds = emps.map((e: any) => e.id);
 
       // Fetch all PIN_SEED_* entries for all employees in one query
-      const { data: allSeeds } = await supabase
+      const { data: allSeeds, error: seedsErr } = await supabase
         .from(BANK_TABLE)
         .select("*")
         .like("type", "PIN_SEED_%")
         .in(BANK_EMP_COL, empIds)
         .order("date", { ascending: true });
+      if (seedsErr) throw new Error(seedsErr.message);
 
       // Build seed map: empId → { monthKey → minutes }
       const seedsByEmp: Record<string, Record<string, number>> = {};
@@ -979,13 +980,15 @@ export async function createApp() {
       }
 
       // Fetch all attendance records from Jan 2026 onwards — one batch query
-      const { data: allRecs } = await supabase
+      const lastDayOfCurrentMonth = new Date(currentYear, currentMonth, 0).getDate();
+      const { data: allRecs, error: recsErr } = await supabase
         .from("attendance_records")
         .select("employee_id, date, status, overtime50, overtime100")
         .in("employee_id", empIds)
         .gte("date", "2026-01-01")
-        .lte("date", `${currentYear}-${String(currentMonth).padStart(2,"0")}-31`)
+        .lte("date", `${currentYear}-${String(currentMonth).padStart(2,"0")}-${String(lastDayOfCurrentMonth).padStart(2,"0")}`)
         .order("date");
+      if (recsErr) throw new Error(recsErr.message);
 
       // Index records by empId → date prefix
       const recsByEmp: Record<string, { date: string; overtime50: number; overtime100: number; status: string }[]> = {};
