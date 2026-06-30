@@ -755,6 +755,137 @@ export async function createApp() {
     }
   });
 
+  // ── PIN Project Balances ─────────────────────────────────────────────────
+  const PIN_SEED_TYPE = "PIN_SEED_MAI2026";
+
+  // GET all PIN employees with their accumulated balance (seed)
+  app.get("/api/pin-project/balances", async (_req, res) => {
+    try {
+      // Fetch all PIN employees
+      const { data: emps, error: empErr } = await supabase
+        .from("employees")
+        .select("id,name,cpf,registration,departments(name)")
+        .eq("pin_project", true)
+        .eq("status", "ATIVO")
+        .order("name");
+      if (empErr) throw new Error(empErr.message);
+
+      // Fetch all PIN seed bank entries
+      const empIds = (emps || []).map((e: any) => e.id);
+      let seeds: any[] = [];
+      if (empIds.length > 0) {
+        const { data: bankData } = await supabase
+          .from(BANK_TABLE)
+          .select("*")
+          .eq("type", PIN_SEED_TYPE)
+          .in(BANK_EMP_COL, empIds);
+        seeds = bankData || [];
+      }
+
+      const seedMap: Record<string, number> = {};
+      for (const s of seeds) {
+        const eid = s.employee_id ?? s.employeeId;
+        seedMap[eid] = s.minutes;
+      }
+
+      const result = (emps || []).map((e: any) => ({
+        id: e.id,
+        name: e.name,
+        cpf: e.cpf,
+        registration: e.registration,
+        department: e.departments?.name ?? null,
+        pinSeedMinutes: seedMap[e.id] ?? null,
+      }));
+
+      res.json({ success: true, employees: result });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST import/upsert PIN seed balance for one employee
+  app.post("/api/pin-project/balance/:employeeId", async (req, res) => {
+    try {
+      const { employeeId } = req.params;
+      const { minutes, description } = req.body;
+      if (minutes === undefined || minutes === null) return res.status(400).json({ error: "Informe os minutos" });
+      const min = Number(minutes);
+      if (isNaN(min)) return res.status(400).json({ error: "Valor inválido de minutos" });
+
+      // Delete any existing seed for this employee
+      await supabase
+        .from(BANK_TABLE)
+        .delete()
+        .eq(BANK_EMP_COL, employeeId)
+        .eq("type", PIN_SEED_TYPE);
+
+      // Insert new seed
+      const record: Record<string, any> = {
+        [BANK_EMP_COL]: employeeId,
+        minutes: min,
+        date: "2026-05-31",
+        type: PIN_SEED_TYPE,
+        description: description || "Saldo acumulado PIN Projeto Jan–Mai/2026 (planilha)",
+      };
+      const { data, error } = await supabase
+        .from(BANK_TABLE)
+        .insert([record])
+        .select()
+        .single();
+      if (error) throw new Error(error.message);
+      res.json({ success: true, entry: data });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST bulk import PIN seed balances
+  app.post("/api/pin-project/import-bulk", async (req, res) => {
+    try {
+      const { entries } = req.body as { entries: Array<{ employeeId: string; minutes: number; nome: string }> };
+      if (!Array.isArray(entries) || entries.length === 0) return res.status(400).json({ error: "Nenhuma entrada fornecida" });
+
+      const results: Array<{ employeeId: string; nome: string; ok: boolean; error?: string }> = [];
+
+      for (const entry of entries) {
+        try {
+          const min = Number(entry.minutes);
+          if (isNaN(min)) { results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: false, error: "Minutos inválidos" }); continue; }
+
+          // Delete existing seed
+          await supabase.from(BANK_TABLE).delete().eq(BANK_EMP_COL, entry.employeeId).eq("type", PIN_SEED_TYPE);
+
+          // Insert new
+          const { error } = await supabase.from(BANK_TABLE).insert([{
+            [BANK_EMP_COL]: entry.employeeId,
+            minutes: min,
+            date: "2026-05-31",
+            type: PIN_SEED_TYPE,
+            description: "Saldo acumulado PIN Projeto Jan–Mai/2026 (planilha)",
+          }]);
+          results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: !error, error: error?.message });
+        } catch (e: any) {
+          results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: false, error: e.message });
+        }
+      }
+
+      const ok = results.filter(r => r.ok).length;
+      res.json({ success: true, imported: ok, total: results.length, results });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // DELETE PIN seed balance for one employee
+  app.delete("/api/pin-project/balance/:employeeId", async (req, res) => {
+    try {
+      await supabase.from(BANK_TABLE).delete().eq(BANK_EMP_COL, req.params.employeeId).eq("type", PIN_SEED_TYPE);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ── Organization ─────────────────────────────────────────────────────────
   app.get("/api/organizations", async (_req, res) => {
     try {

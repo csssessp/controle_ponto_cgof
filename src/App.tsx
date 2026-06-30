@@ -2,13 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from '@/components/ui/sonner';
-import { 
-  FileUp, 
-  Users, 
-  Calendar, 
-  Settings, 
-  LogOut, 
-  Menu, 
+import {
+  FileUp,
+  Users,
+  Calendar,
+  Settings,
+  LogOut,
+  Menu,
   X,
   Search,
   Moon,
@@ -20,6 +20,7 @@ import {
   KeyRound,
   Eye,
   EyeOff,
+  Target,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuthStore, useAppStore } from '@/src/lib/store';
@@ -33,6 +34,7 @@ import SettingsPage from './pages/Settings';
 import UsersPage from './pages/Users';
 import DashboardPage from './pages/Dashboard';
 import LoginPage from './pages/Login';
+import PinProject from './pages/PinProject';
 
 
 const queryClient = new QueryClient();
@@ -72,6 +74,7 @@ function Sidebar() {
     { title: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
     { title: 'Espelho de Ponto', path: '/ponto', icon: Calendar },
     { title: 'Funcionários', path: '/employees', icon: Users },
+    { title: 'Projeto PIN', path: '/pin', icon: Target },
     { title: 'Upload Ponto', path: '/upload', icon: FileUp },
     { title: 'Configurações', path: '/settings', icon: Settings },
   ];
@@ -370,6 +373,7 @@ export default function App() {
           <Route path="/upload" element={<RequireAuth><MainLayout><Upload /></MainLayout></RequireAuth>} />
           <Route path="/employees" element={<RequireAuth><MainLayout><Employees /></MainLayout></RequireAuth>} />
           <Route path="/ponto" element={<RequireAuth><MainLayout><TimeCard /></MainLayout></RequireAuth>} />
+          <Route path="/pin" element={<RequireAuth><MainLayout><PinProject /></MainLayout></RequireAuth>} />
           <Route path="/users" element={<RequireAuth><MainLayout><UsersPage /></MainLayout></RequireAuth>} />
           <Route path="/settings" element={<RequireAuth><MainLayout><SettingsPage /></MainLayout></RequireAuth>} />
           <Route path="*" element={<Navigate to="/login" replace />} />
