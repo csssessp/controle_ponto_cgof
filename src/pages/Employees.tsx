@@ -176,52 +176,65 @@ export default function Employees() {
       const now = new Date();
       const cy = now.getFullYear(), cm = now.getMonth() + 1;
 
-      const [bankRes, attRes] = await Promise.all([
+      const [bankRes, allAttRes] = await Promise.all([
         fetch("/api/time-bank/" + emp.id).then(x => x.json()),
-        fetch(`/api/attendance/${emp.id}?year=${cy}&month=${cm}`).then(x => x.json()),
+        fetch("/api/attendance/" + emp.id).then(x => x.json()),  // ALL records for full history
       ]);
 
       const entries: any[] = bankRes.entries || [];
-      const seedTotal: number = bankRes.totalMinutes || 0;  // already PIN-seed-aware (server handles this)
+      const seedTotal: number = bankRes.totalMinutes || 0;
       const pinSeedPresent: boolean = bankRes.pinSeedPresent ?? false;
       setBankPinSeedPresent(pinSeedPresent);
-
       setBankEntries(entries);
       setBankTotal(seedTotal);
 
-      // Cutoff = latest entry date
-      let cutoff: { year: number; month: number } | null = null;
+      // Cutoff: month of latest bank entry. Seed covers history UP TO end of (cutoffMonth - 1).
+      // If seed date is from a previous year (e.g. 2025), treat as covering through Dec of that year
+      // → start computing from Jan of the following year to avoid double-counting.
+      let cutoffYM = 0; // 0 = no cutoff, include all records
       if (entries.length) {
         const latest = entries.map((e: any) => (e.date ?? "").substring(0, 10)).filter(Boolean).sort().at(-1);
         if (latest) {
-          const [y, m] = latest.split("-").map(Number);
-          cutoff = { year: y, month: m };
+          const [ey, em] = latest.split("-").map(Number);
+          cutoffYM = ey * 12 + em;
         }
       }
 
-      // Current month bank contribution from attendance
-      const records: any[] = attRes.records || [];
+      const curYM = cy * 12 + cm;
       const expectedWork = emp.schedules?.expected_work ?? 480;
       const lunchMin = emp.schedules?.lunch_minutes ?? 60;
-      let monthBank = 0;
-      for (const rec of records) {
-        const te = rec.time_entries || [];
-        if (["NORMAL", "COMPENSATION"].includes(rec.status) && te.length >= 2) {
-          monthBank += calcNetForBank(te, expectedWork, lunchMin);
+      const allRecs: any[] = allAttRes.records || [];
+
+      let accumulated = seedTotal;
+      const monthOvertimes: Record<string, number> = {};
+
+      for (const rec of allRecs) {
+        const dateStr = (rec.date ?? "").substring(0, 10);
+        if (!dateStr) continue;
+        const [ry, rm] = dateStr.split("-").map(Number);
+        const recYM = ry * 12 + rm;
+        if (cutoffYM > 0 && recYM < cutoffYM) continue; // before seed → skip
+        if (recYM > curYM) continue;                     // future → skip
+
+        const te: any[] = rec.time_entries || [];
+        let delta = 0;
+        if (te.length >= 2 && ["NORMAL", "COMPENSATION"].includes(rec.status)) {
+          delta = calcNetForBank(te, expectedWork, lunchMin);
         } else if (rec.status === "ABSENCE") {
-          monthBank -= expectedWork;
+          delta = -expectedWork;
         }
+        accumulated += delta;
+        const mk = `${ry}-${rm}`;
+        if (delta > 0) monthOvertimes[mk] = (monthOvertimes[mk] || 0) + delta;
       }
 
-      const afterCutoff = !cutoff || (cy > cutoff.year || (cy === cutoff.year && cm >= cutoff.month));
-      const rawTotal = afterCutoff ? seedTotal + monthBank : seedTotal;
+      // PIN deduction for banco de horas: always 40h (2400 min) per month, not the bonus goal
+      const pinDeduction = emp.pin_project
+        ? Object.values(monthOvertimes).reduce((s, ot) => s + Math.min(ot, 2400), 0)
+        : 0;
+      const realTotal = accumulated - pinDeduction;
 
-      // Use the correct monthly PIN goal (not a hardcoded 40h)
-      // If PIN_SEED is present: seed already accounts for all past PIN deductions → only deduct current month goal
-      // If no PIN_SEED: fall back to 40h deduction (legacy behaviour)
-      const currentMonthGoal = PIN_MONTH_GOALS[cm] ?? 2400;
-      setBankPinGoal(currentMonthGoal);
-      const realTotal = rawTotal - (emp.pin_project ? currentMonthGoal : 0);
+      setBankPinGoal(PIN_MONTH_GOALS[cm] ?? 2400); // still shows bonus target for info
       setBankComputedTotal(realTotal);
     } catch {
       setBankComputedTotal(null);
@@ -1297,9 +1310,7 @@ export default function Employees() {
                         )}
                         <p className="text-[11px] text-muted-foreground mt-1.5">
                           {editTarget?.pin_project
-                            ? bankPinSeedPresent
-                              ? `Saldo PIN acumulado + mês atual − ${bankPinGoal / 60}h (meta PIN)`
-                              : `Saldo base + mês atual − ${bankPinGoal / 60}h (meta PIN)`
+                            ? "Banco de horas acumulado — dedução PIN: 40h/mês (bônus separado)"
                             : "Banco de horas geral — não vinculado ao Projeto PIN"}
                         </p>
                       </div>

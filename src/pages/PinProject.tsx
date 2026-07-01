@@ -265,6 +265,32 @@ export default function PinProject() {
             if (monthKeyToNum(mk) > STATIC_MONTH_NUM) mkSet.add(mk);
           }
         }
+
+        // Override accumulated values using EXCEL_DATA maiAcumMin as the authoritative base.
+        // The server auto-balances may not have the correct monthly seeds in the DB,
+        // so we anchor the Jun+ calculation to the known May accumulated from the spreadsheet.
+        const normCpf = (s: string) => s.replace(/\D/g, "");
+        for (const emp of ja.employees as any[]) {
+          if (!emp.id || !map[emp.id]) continue;
+          const excelEntry = EXCEL_DATA.find(ex =>
+            ex.cpf && emp.cpf && normCpf(ex.cpf) === normCpf(emp.cpf)
+          );
+          const base = excelEntry?.maiAcumMin ?? null;
+          if (base === null || base === undefined) continue;
+
+          // Recompute accumulated for all dynamic months starting from maiAcumMin
+          const dynamicMks = Object.keys(map[emp.id])
+            .filter(mk => monthKeyToNum(mk) > STATIC_MONTH_NUM)
+            .sort((a, b) => monthKeyToNum(a) - monthKeyToNum(b));
+
+          let accumulated = base;
+          for (const mk of dynamicMks) {
+            const data = map[emp.id][mk];
+            accumulated += data.extras - 2400; // bankGoal always 40h
+            map[emp.id][mk] = { ...data, acum: accumulated, noSeedMode: false };
+          }
+        }
+
         setAutoBalances(map);
         const merged = Array.from(mkSet).sort((a, b) => monthKeyToNum(a) - monthKeyToNum(b));
         setAutoMonthKeys(merged);
