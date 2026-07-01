@@ -5,6 +5,7 @@ import {
   Building2, Phone, Mail, MapPin, Hash, Palette, Shield,
   Lock, Zap, ChevronRight, TrendingUp, Activity, Eye, EyeOff,
   Check, AlertCircle, CalendarDays, FileText, Star, AlertTriangle,
+  Target,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,6 +49,7 @@ const SECTION_COLORS: Record<string, string> = {
   sectors:     "bg-indigo-50 border-indigo-100 text-indigo-600",
   schedules:   "bg-purple-50 border-purple-100 text-purple-600",
   holidays:    "bg-orange-50 border-orange-100 text-orange-600",
+  pin:         "bg-teal-50   border-teal-100   text-teal-600",
   users:       "bg-emerald-50 border-emerald-100 text-emerald-600",
   appearance:  "bg-pink-50   border-pink-100   text-pink-600",
   permissions: "bg-amber-50  border-amber-100  text-amber-600",
@@ -60,6 +62,7 @@ const SECTIONS = [
   { id: "sectors",     label: "Setores",       desc: "Departamentos e estrutura",        icon: Building2,    status: "" },
   { id: "schedules",   label: "Jornadas",      desc: "Turnos e cargas horárias",        icon: Clock,        status: "" },
   { id: "holidays",    label: "Feriados",      desc: "Feriados, pontos facultativos e decreto", icon: CalendarDays, status: "" },
+  { id: "pin",         label: "Projeto PIN",   desc: "Metas mensais e regras do Decreto nº 70.273/2025", icon: Target, status: "" },
   { id: "users",       label: "Usuários",      desc: "Acesso e perfis do sistema",      icon: Users,        status: "" },
   { id: "appearance",  label: "Aparência",     desc: "Cores, tema e preferências",      icon: Palette,      status: "" },
   { id: "permissions", label: "Permissões",    desc: "Controles e níveis de acesso",    icon: Shield,       status: "" },
@@ -445,6 +448,7 @@ function PanelContent(props: any) {
     case "sectors":   return <PanelSectors {...props} />;
     case "schedules": return <PanelSchedules {...props} />;
     case "holidays":  return <PanelHolidays />;
+    case "pin":       return <PanelPinConfig />;
     case "users":     return <PanelUsers />;
     case "appearance":return <PanelAppearance {...props} />;
     case "permissions":return <PanelPermissions />;
@@ -452,6 +456,164 @@ function PanelContent(props: any) {
     case "integrations": return <PanelIntegrations />;
     default: return null;
   }
+}
+
+// ── Projeto PIN ──────────────────────────────────────────────────────────────
+const PIN_MONTHS_PT = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+const PIN_DEFAULT_GOALS: Record<number, number> = {
+  1:2400, 2:2400, 3:2400, 4:2880, 5:2400,
+  6:2880, 7:2880, 8:2400, 9:2400, 10:2400, 11:2400, 12:2400,
+};
+
+function PanelPinConfig() {
+  const [goals, setGoals] = useState<Record<number, number>>(PIN_DEFAULT_GOALS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving]   = useState(false);
+  const [decree, setDecree]   = useState("Decreto nº 70.273/2025");
+
+  useEffect(() => {
+    fetch("/api/pin-project/goals")
+      .then(r => r.json())
+      .then(d => {
+        if (d.goals) {
+          const loaded: Record<number, number> = {};
+          for (const [k, v] of Object.entries(d.goals as Record<string, number>)) loaded[parseInt(k)] = v;
+          setGoals(loaded);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const setHours = (month: number, val: string) => {
+    const h = parseFloat(val);
+    if (!isNaN(h) && h > 0) setGoals(g => ({ ...g, [month]: Math.round(h * 60) }));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const r = await fetch("/api/pin-project/goals", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goals }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      toast.success("Metas PIN atualizadas!");
+    } catch (e: any) {
+      toast.error("Erro ao salvar: " + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reset = () => {
+    setGoals({ ...PIN_DEFAULT_GOALS });
+    toast.info("Metas restauradas ao padrão do decreto");
+  };
+
+  const totalAnnual: number = (Object.values(goals) as number[]).reduce((s, v) => s + v, 0);
+
+  return (
+    <div className="space-y-6">
+      {/* Header info */}
+      <div className="rounded-2xl border border-teal-100 bg-teal-50 p-4 space-y-1">
+        <div className="flex items-center gap-2">
+          <Target className="w-4 h-4 text-teal-600" />
+          <p className="text-xs font-bold text-teal-700 uppercase tracking-widest">Referência Legal</p>
+        </div>
+        <input
+          value={decree}
+          onChange={e => setDecree(e.target.value)}
+          className="w-full bg-transparent text-sm font-medium text-teal-800 border-none outline-none"
+        />
+        <p className="text-[11px] text-teal-600">
+          Total anual: <strong>{Math.round(totalAnnual / 60)}h</strong> · Média mensal: <strong>{(totalAnnual / 60 / 12).toFixed(1)}h</strong>
+        </p>
+      </div>
+
+      {/* Monthly goals grid */}
+      {loading ? (
+        <p className="text-sm text-muted-foreground text-center py-8">Carregando configurações...</p>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Meta por Mês (horas)</p>
+          <div className="grid grid-cols-2 gap-3">
+            {Array.from({ length: 12 }, (_, i) => i + 1).map(m => {
+              const goal = goals[m] ?? 2400;
+              const isDefault = goal === PIN_DEFAULT_GOALS[m];
+              const isHigher = goal > 2400;
+              return (
+                <div
+                  key={m}
+                  className={cn(
+                    "rounded-2xl border p-3 flex items-center gap-3 transition-colors",
+                    !isDefault ? "border-teal-200 bg-teal-50/50" : "border-border bg-background"
+                  )}
+                >
+                  <div className={cn(
+                    "w-8 h-8 rounded-xl flex items-center justify-center text-[10px] font-bold shrink-0",
+                    isHigher ? "bg-amber-100 text-amber-700" : "bg-teal-100 text-teal-700"
+                  )}>
+                    {PIN_MONTHS_PT[m-1].slice(0,3).toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-foreground">{PIN_MONTHS_PT[m-1]}</p>
+                    <p className="text-[10px] text-muted-foreground">padrão: {PIN_DEFAULT_GOALS[m] / 60}h</p>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min="1"
+                      max="200"
+                      step="0.5"
+                      value={(goal / 60).toFixed(1).replace(".0", "")}
+                      onChange={e => setHours(m, e.target.value)}
+                      className="w-16 text-right font-mono text-sm font-bold border border-border rounded-xl px-2 py-1 bg-background focus:outline-none focus:ring-2 focus:ring-teal-500/30"
+                    />
+                    <span className="text-xs text-muted-foreground">h</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="flex gap-3">
+        <Button
+          variant="outline"
+          onClick={reset}
+          className="flex-1 rounded-xl gap-2 text-sm"
+        >
+          <X className="w-4 h-4" /> Restaurar Padrão
+        </Button>
+        <Button
+          onClick={save}
+          disabled={saving}
+          className="flex-1 rounded-xl gap-2 text-sm bg-teal-600 hover:bg-teal-700 text-white"
+        >
+          <Save className="w-4 h-4" />
+          {saving ? "Salvando..." : "Salvar Metas"}
+        </Button>
+      </div>
+
+      {/* Info box */}
+      <div className="rounded-2xl border border-border bg-muted/20 p-4 space-y-2">
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest flex items-center gap-1.5">
+          <AlertCircle className="w-3.5 h-3.5" /> Como funciona
+        </p>
+        <ul className="text-xs text-muted-foreground space-y-1.5">
+          <li>• Funcionários PIN precisam cumprir a meta mensal para receber o bônus</li>
+          <li>• O saldo acumulado = Σ(horas extras − meta do mês) desde Dez/2025</li>
+          <li>• Meses com meta maior (48h) são marcados com ★ na planilha de saldos</li>
+          <li>• Alterações aqui afetam imediatamente os cálculos do banco de horas</li>
+        </ul>
+      </div>
+    </div>
+  );
 }
 
 // ── Feriados ─────────────────────────────────────────────────────────────────

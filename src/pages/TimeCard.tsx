@@ -630,6 +630,11 @@ export default function TimeCard() {
   // Accumulated bank delta for months BETWEEN the seed cutoff and current viewed month
   const [historicalBankDelta, setHistoricalBankDelta] = useState(0);
   const [historicalPinDed,    setHistoricalPinDed]    = useState(0);
+  // PIN monthly goals (minutes) — loaded from server, configurable by admin
+  const [pinMonthGoals, setPinMonthGoals] = useState<Record<number, number>>({
+    1: 2400, 2: 2400, 3: 2400, 4: 2880, 5: 2400,
+    6: 2880, 7: 2880, 8: 2400, 9: 2400, 10: 2400, 11: 2400, 12: 2400,
+  });
 
   // UI dropdowns
   const [empSearch,      setEmpSearch]      = useState("");
@@ -652,6 +657,11 @@ export default function TimeCard() {
         if (d.employees?.length && !selectedEmpId) setSelectedEmpId(d.employees[0].id);
       })
       .catch(() => toast.error("Erro ao carregar funcionários"));
+    // Load PIN goals config
+    fetch("/api/pin-project/goals")
+      .then(r => r.json())
+      .then(d => { if (d.goals) setPinMonthGoals(d.goals); })
+      .catch(() => { /* use defaults */ });
   }, []);
 
   useEffect(() => {
@@ -714,7 +724,7 @@ export default function TimeCard() {
         const allRecs: AttRecord[] = d.records || [];
 
         let totalBankDelta = 0;
-        const monthExtras: Record<string, number> = {};
+        const monthExtras: Record<string, { ot: number; month: number }> = {};
 
         for (const rec of allRecs) {
           const dateStr = rec.date.substring(0, 10);
@@ -731,14 +741,16 @@ export default function TimeCard() {
 
           totalBankDelta += calc.ot - calc.deficit;
           const mk = `${ry}-${rm}`;
-          monthExtras[mk] = (monthExtras[mk] || 0) + calc.ot;
+          if (!monthExtras[mk]) monthExtras[mk] = { ot: 0, month: rm };
+          monthExtras[mk].ot += calc.ot;
         }
 
-        // PIN deduction per historical month (each month: deduct up to 40h from that month's extras)
+        // PIN deduction per historical month — use the correct goal per month (not always 2400)
         let pinDed = 0;
         if (emp.pin_project) {
-          for (const extras of Object.values(monthExtras)) {
-            pinDed += Math.min(extras, 2400);
+          for (const { ot, month } of Object.values(monthExtras)) {
+            const goal = pinMonthGoals[month] ?? 2400;
+            pinDed += Math.min(ot, goal);
           }
         }
 
@@ -845,7 +857,8 @@ export default function TimeCard() {
   const viewedAfterCutoff = bankCutoff
     ? (year > bankCutoff.year || (year === bankCutoff.year && month >= bankCutoff.month))
     : true;
-  const currentPinDeduction = (selectedEmp?.pin_project && viewedAfterCutoff) ? Math.min(totals.extra, 2400) : 0;
+  const currentMonthPinGoal = pinMonthGoals[month] ?? 2400;
+  const currentPinDeduction = (selectedEmp?.pin_project && viewedAfterCutoff) ? Math.min(totals.extra, currentMonthPinGoal) : 0;
   const totalAccumulatedBank = viewedAfterCutoff
     ? bankSeedTotal + historicalBankDelta + totals.bank - historicalPinDed - currentPinDeduction
     : bankSeedTotal;
@@ -919,10 +932,12 @@ export default function TimeCard() {
       monthExtras[mk] = (monthExtras[mk] || 0) + calc.ot;
     }
 
-    // PIN deduction per month (cap each month's extras at 40h)
+    // PIN deduction per month — use correct monthly goal (not always 2400)
     if (emp.pin_project) {
-      for (const extras of Object.values(monthExtras)) {
-        accumulated -= Math.min(extras, 2400);
+      for (const [mk, extras] of Object.entries(monthExtras)) {
+        const rm = parseInt(mk.split("-")[1]);
+        const goal = pinMonthGoals[rm] ?? 2400;
+        accumulated -= Math.min(extras, goal);
       }
     }
 

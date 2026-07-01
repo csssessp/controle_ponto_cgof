@@ -30,6 +30,34 @@ const supabase = createClient(supabaseUrl, supabaseServiceRole, {
 let BANK_TABLE = "time_bank_entries";
 let BANK_EMP_COL = "employee_id";
 
+// ── PIN Project configuration (module-level, updatable by admin) ──────────────
+// Decreto nº 70.273/2025 — Apr, Jun, Jul = 48h (feriado); todos os outros = 40h
+let PIN_MONTH_GOALS: Record<number, number> = {
+  1: 2400, 2: 2400, 3: 2400, 4: 2880, 5: 2400,
+  6: 2880, 7: 2880, 8: 2400, 9: 2400, 10: 2400, 11: 2400, 12: 2400,
+};
+const PIN_MONTH_ABBR: Record<number, string> = {
+  1: "JAN", 2: "FEV", 3: "MAR", 4: "ABR", 5: "MAI",
+  6: "JUN", 7: "JUL", 8: "AGO", 9: "SET", 10: "OUT", 11: "NOV", 12: "DEZ",
+};
+
+async function loadPinGoalsFromDb() {
+  try {
+    const { data } = await supabase
+      .from("app_settings")
+      .select("value")
+      .eq("key", "pin_month_goals")
+      .single();
+    if (data?.value && typeof data.value === "object") {
+      for (const [k, v] of Object.entries(data.value as Record<string, number>)) {
+        const m = parseInt(k);
+        if (m >= 1 && m <= 12 && typeof v === "number" && v > 0) PIN_MONTH_GOALS[m] = v;
+      }
+      console.log("[server] ✅ PIN goals loaded from app_settings");
+    }
+  } catch { /* use hardcoded defaults */ }
+}
+
 async function detectBankTable() {
   // Try snake_case first (preferred)
   const { error: e1 } = await supabase.from("time_bank_entries").select("id").limit(1);
@@ -134,6 +162,7 @@ async function getOrCreateOrg(): Promise<string> {
 
 export async function createApp() {
   await detectBankTable();
+  await loadPinGoalsFromDb();
 
   const app = express();
   app.use(express.json({ limit: "50mb" }));
@@ -772,19 +801,7 @@ export async function createApp() {
 
   // ── PIN Project / Saldos Acumulados ──────────────────────────────────────
   const PIN_SEED_TYPE = "PIN_SEED_MAI2026";
-
-  // Monthly PIN goals (minutes) — Decreto nº 70.273/2025
-  // Apr, Jun, Jul = 48h (compensação feriado); all others = 40h
-  const PIN_MONTH_GOALS: Record<number, number> = {
-    1: 2400, 2: 2400, 3: 2400, 4: 2880, 5: 2400,
-    6: 2880, 7: 2880, 8: 2400, 9: 2400, 10: 2400, 11: 2400, 12: 2400,
-  };
-
-  // Month abbreviations used in PIN_SEED_* type names
-  const PIN_MONTH_ABBR: Record<number, string> = {
-    1: "JAN", 2: "FEV", 3: "MAR", 4: "ABR", 5: "MAI",
-    6: "JUN", 7: "JUL", 8: "AGO", 9: "SET", 10: "OUT", 11: "NOV", 12: "DEZ",
-  };
+  // PIN_MONTH_GOALS and PIN_MONTH_ABBR are now module-level (configurable by admin)
 
   // GET all active employees with their PIN_SEED_* balances (all months)
   app.get("/api/pin-project/balances", async (_req, res) => {
@@ -1118,6 +1135,29 @@ export async function createApp() {
   // GET PIN month goals
   app.get("/api/pin-project/goals", (_req, res) => {
     res.json({ success: true, goals: PIN_MONTH_GOALS, monthAbbr: PIN_MONTH_ABBR });
+  });
+
+  // PUT PIN month goals — admin configuration
+  app.put("/api/pin-project/goals", async (req, res) => {
+    try {
+      const { goals } = req.body as { goals: Record<string, number> };
+      if (!goals || typeof goals !== "object") return res.status(400).json({ error: "goals inválido" });
+      for (const [k, v] of Object.entries(goals)) {
+        const m = parseInt(k);
+        const min = Number(v);
+        if (m >= 1 && m <= 12 && !isNaN(min) && min > 0) PIN_MONTH_GOALS[m] = min;
+      }
+      // Persist to app_settings (best-effort, table may not exist)
+      try {
+        await supabase.from("app_settings").upsert(
+          { key: "pin_month_goals", value: PIN_MONTH_GOALS, updated_at: new Date().toISOString() },
+          { onConflict: "key" }
+        );
+      } catch { /* no app_settings table — in-memory update still applied */ }
+      res.json({ success: true, goals: PIN_MONTH_GOALS });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // DELETE PIN seed balance for one employee
