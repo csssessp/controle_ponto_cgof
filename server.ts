@@ -982,7 +982,8 @@ export async function createApp() {
         .select("*")
         .like("type", "PIN_SEED_%")
         .in(BANK_EMP_COL, empIds)
-        .order("date", { ascending: true });
+        .order("date", { ascending: true })
+        .limit(10000);
       if (seedsErr) throw new Error(seedsErr.message);
 
       // Build seed map: empId → { monthKey → minutes }
@@ -996,13 +997,16 @@ export async function createApp() {
 
       // Fetch all attendance records from Jan 2026 onwards — one batch query
       const lastDayOfCurrentMonth = new Date(currentYear, currentMonth, 0).getDate();
+      // Supabase PostgREST default row limit is 1000 — must explicitly set limit higher
+      // 55 employees × 26 days × 7 months ≈ 10,010 rows max; 50,000 is safe
       const { data: allRecs, error: recsErr } = await supabase
         .from("attendance_records")
         .select("employee_id, date, status, overtime50, overtime100")
         .in("employee_id", empIds)
         .gte("date", "2026-01-01")
         .lte("date", `${currentYear}-${String(currentMonth).padStart(2,"0")}-${String(lastDayOfCurrentMonth).padStart(2,"0")}`)
-        .order("date");
+        .order("date")
+        .limit(50000);
       if (recsErr) throw new Error(recsErr.message);
 
       // Index records by empId → date prefix
@@ -1019,30 +1023,40 @@ export async function createApp() {
         const seeds = seedsByEmp[emp.id] ?? {};
         const recs  = recsByEmp[emp.id]  ?? [];
 
-        // Determine best starting seed: prefer the EARLIEST that allows full calculation
-        // DEZ2025 → can calculate Jan 2026 onwards
-        // MAI2026 (or any month) → can calculate from that month + 1 onwards
+        // Determine starting point: prefer DEZ2025 seed → full history
+        // Otherwise: latest seed; or if no seed, start from first attendance month (accumulated = 0)
         const hasDezSeed = "DEZ2025" in seeds;
-        const startMk = hasDezSeed ? "DEZ2025" : (
-          // Pick the LATEST seed as starting point
-          Object.keys(seeds).sort((a, b) => mkNum(a) - mkNum(b)).at(-1) ?? null
-        );
-        if (!startMk) return { id: emp.id, name: emp.name, cpf: emp.cpf, autoMonths: {}, hasAnySeed: false };
+        const sortedSeedKeys = Object.keys(seeds).sort((a, b) => mkNum(a) - mkNum(b));
+        const latestSeedMk = sortedSeedKeys.at(-1) ?? null;
+        const startMk = hasDezSeed ? "DEZ2025" : latestSeedMk;
 
-        // Parse starting month
-        const startAbbr = startMk.slice(0, 3);
-        const startYear = parseInt(startMk.slice(3), 10);
-        const startMonthNum = MONTH_ABBR_TO_NUM[startAbbr] ?? 12;
-        let accumulated = seeds[startMk];
+        let startY: number, startM: number, accumulated: number;
+        let noSeedMode = false;
+
+        if (startMk) {
+          // Has seed — start from month after the seed
+          const startAbbr = startMk.slice(0, 3);
+          startY = parseInt(startMk.slice(3), 10);
+          startM = (MONTH_ABBR_TO_NUM[startAbbr] ?? 12) + 1;
+          if (startM > 12) { startM = 1; startY++; }
+          accumulated = seeds[startMk];
+        } else if (recs.length > 0) {
+          // No seed — start from earliest attendance month, accumulated = 0
+          noSeedMode = true;
+          const firstDate = recs.reduce((a, b) => a.date < b.date ? a : b).date;
+          const [fy, fm] = firstDate.substring(0, 7).split("-").map(Number);
+          startY = fy; startM = fm; accumulated = 0;
+        } else {
+          // No seed, no records — nothing to show
+          return { id: emp.id, name: emp.name, cpf: emp.cpf, autoMonths: {}, hasAnySeed: false };
+        }
 
         const autoMonths: Record<string, {
-          acum: number; extras: number; goal: number;
-          recordCount: number; isComplete: boolean; isCurrentMonth: boolean;
+          acum: number | null; extras: number; goal: number;
+          recordCount: number; isComplete: boolean; isCurrentMonth: boolean; noSeedMode: boolean;
         }> = {};
 
-        // Iterate months from startMonth+1 through current month
-        let y = startYear, m = startMonthNum + 1;
-        if (m > 12) { m = 1; y++; }
+        let y = startY, m = startM;
 
         while (y < currentYear || (y === currentYear && m <= currentMonth)) {
           const prefix = `${y}-${String(m).padStart(2, "0")}`;
@@ -1055,15 +1069,15 @@ export async function createApp() {
           const abbr = PIN_MONTH_ABBR[m] ?? "???";
           const mk = `${abbr}${y}`;
           const isCurrentMonth = (y === currentYear && m === currentMonth);
-          const isComplete = !isCurrentMonth; // past months are complete
+          const isComplete = !isCurrentMonth;
 
-          // If a manually-imported seed exists for this month, use it instead
-          // (manual override takes precedence over auto-calculation)
+          // Manual seed override for this month takes precedence
           if (mk in seeds) {
             accumulated = seeds[mk];
-            autoMonths[mk] = { acum: seeds[mk], extras: totalExtras, goal, recordCount: monthRecs.length, isComplete, isCurrentMonth };
+            autoMonths[mk] = { acum: seeds[mk], extras: totalExtras, goal, recordCount: monthRecs.length, isComplete, isCurrentMonth, noSeedMode: false };
           } else {
-            autoMonths[mk] = { acum: accumulated, extras: totalExtras, goal, recordCount: monthRecs.length, isComplete, isCurrentMonth };
+            // In noSeedMode, acum is relative (from 0, not absolute)
+            autoMonths[mk] = { acum: noSeedMode ? accumulated : accumulated, extras: totalExtras, goal, recordCount: monthRecs.length, isComplete, isCurrentMonth, noSeedMode };
           }
 
           m++;
@@ -1075,8 +1089,9 @@ export async function createApp() {
           name: emp.name,
           cpf: emp.cpf,
           autoMonths,
-          hasAnySeed: true,
-          startMk,
+          hasAnySeed: !!startMk,
+          noSeedMode,
+          startMk: startMk ?? null,
           hasDezSeed,
         };
       });

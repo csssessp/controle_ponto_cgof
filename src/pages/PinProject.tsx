@@ -169,13 +169,14 @@ type MatchedEntry = ExcelEntry & {
 };
 
 type AutoMonthData = {
-  acum: number;
+  acum: number | null;
   extras: number;
   goal: number;
   recordCount: number;
   isComplete: boolean;
   isCurrentMonth: boolean;
   isManualOverride?: boolean;
+  noSeedMode?: boolean;
 };
 
 type EditState = { minutes: string; open: boolean };
@@ -255,9 +256,11 @@ export default function PinProject() {
         const map: Record<string, Record<string, AutoMonthData>> = {};
         const mkSet = new Set<string>();
         for (const emp of ja.employees as any[]) {
-          if (!emp.hasAnySeed) continue;
+          // Include ALL employees — even without seed (noSeedMode shows monthly performance)
+          const months = emp.autoMonths as Record<string, any>;
+          if (!months || Object.keys(months).length === 0) continue;
           map[emp.id] = {};
-          for (const [mk, v] of Object.entries(emp.autoMonths as Record<string, any>)) {
+          for (const [mk, v] of Object.entries(months)) {
             map[emp.id][mk] = v as AutoMonthData;
             if (monthKeyToNum(mk) > STATIC_MONTH_NUM) mkSet.add(mk);
           }
@@ -804,13 +807,19 @@ export default function PinProject() {
                               .sort((a, b) => monthKeyToNum(b) - monthKeyToNum(a))[0];
                             if (latestMk) {
                               const latest = empAutoData[latestMk];
+                              const acumVal = latest.acum;
+                              const isNoSeed = latest.noSeedMode;
                               return (
                                 <div className="flex flex-col items-center gap-0.5">
-                                  <span className={cn("text-[11px] font-mono font-semibold", latest.acum < 0 ? "text-red-600" : "text-emerald-600")}>
-                                    {toHHMMRaw(latest.acum)}
+                                  <span className={cn("text-[11px] font-mono font-semibold",
+                                    acumVal === null ? "text-muted-foreground" :
+                                    acumVal < 0 ? "text-red-600" : "text-emerald-600"
+                                  )}>
+                                    {acumVal !== null ? toHHMMRaw(acumVal) : "—"}
                                   </span>
                                   <span className="text-[8px] text-muted-foreground opacity-60">
                                     {MONTH_KEY_LABEL[latestMk] ?? latestMk}
+                                    {isNoSeed ? " *" : ""}
                                   </span>
                                 </div>
                               );
