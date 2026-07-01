@@ -694,26 +694,6 @@ export async function createApp() {
         created_at: r.created_at ?? r.createdAt,
       }));
 
-      // If no PIN_SEED_MAI2026 exists in DB, inject a virtual one from the spreadsheet data.
-      // This ensures TimeCard and Employees pages compute the correct accumulated bank
-      // anchored to the verified May 2026 balance, without requiring a manual import step.
-      const hasMai2026 = entries.some((e: any) => e.type === "PIN_SEED_MAI2026");
-      if (!hasMai2026) {
-        const { data: empRow } = await supabase
-          .from("employees").select("name").eq("id", empId).single();
-        if (empRow?.name) {
-          const excelMai = EXCEL_MAI2026_BY_NAME[normEmpName(empRow.name)];
-          if (excelMai !== undefined) {
-            entries = [
-              { id: "virtual-mai2026", employee_id: empId, minutes: excelMai,
-                date: "2026-05-31", description: "Saldo Mai/26 (planilha)", type: "PIN_SEED_MAI2026",
-                created_at: "2026-05-31" },
-              ...entries,
-            ];
-          }
-        }
-      }
-
       // If PIN_SEED_* entries exist, use the latest one as the authoritative balance base.
       // All entries before the latest PIN_SEED date are superseded by it.
       const pinSeeds = entries
@@ -823,61 +803,6 @@ export async function createApp() {
 
   // ── PIN Project / Saldos Acumulados ──────────────────────────────────────
   const PIN_SEED_TYPE = "PIN_SEED_MAI2026";
-
-  // Spreadsheet accumulated values through May 2026 — used as MAI2026 seed when not in DB.
-  // Keys are lowercase names with accents stripped (NFD + remove combining chars).
-  const normEmpName = (s: string) =>
-    s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
-  const EXCEL_MAI2026_BY_NAME: Record<string, number> = {
-    "adan freire pereira": 2358,
-    "adriana cristina de jesus azevedo": 1141,
-    "ana paula da silva": -159,
-    "eliana franco pereira": -283,
-    "gabriela fernanda vergueiro": 1440,
-    "susana serafim cirino": 1517,
-    "beatriz puga rodrigues": -404,
-    "dione maria lisboa pereira": -219,
-    "fabio luis pozzo": 11073,
-    "gabriela piccardi gonzales": 132,
-    "roseli aparecida rodrigues colombo": 3046,
-    "bruno marcelo lopes santos": 2418,
-    "clemilson santos cobra": 5743,
-    "dario besseler": 2098,
-    "edna miyuki baba": 39441,
-    "wander heleno salles": 3220,
-    "arlete shirley pereira de carvalho": 2097,
-    "elenice orpheu alves de souza": -606,
-    "elza tatsuo samecima": 12096,
-    "fernanda da silva e souza": 779,
-    "gilmar marciano dos santos": 1398,
-    "joao carlos ferreira de souza": -980,
-    "jomara simoes dos santos": 1027,
-    "karen de oliveira delfino": -407,
-    "luiz andrade": 292,
-    "marilsa da silva e silva": 490,
-    "maristela aparecida raphael": 2424,
-    "marta conceicao de moura": 5773,
-    "renato espirito santo dias tatit": 1018,
-    "roberto carlos santana": 922,
-    "ronaldo hilario dos santos": 1208,
-    "tania cristina begosso": 4624,
-    "thiago almeida da silva": -712,
-    "alexsandra bertaco severino": 1168,
-    "cesar moreira constantino": 2973,
-    "claudenice da silva": 4,
-    "conceicao ap. panissi martins": 7044,
-    "conceicao aparecida panissi martins": 7044,
-    "cleber farias dos santos": 6790,
-    "diego barbosa dos santos": 2563,
-    "fernando cesar barboza": 3321,
-    "jose luiz dos santos moreira": -43,
-    "jose romao batista": 1028,
-    "luiz carlos bazalia dos santos": 6837,
-    "mateus ribeiro da silva": 3733,
-    "thais cristina nascimento barbosa": 2334,
-  };
-  // PIN_MONTH_GOALS and PIN_MONTH_ABBR are now module-level (configurable by admin)
-
   // GET all active employees with their PIN_SEED_* balances (all months)
   app.get("/api/pin-project/balances", async (_req, res) => {
     try {
@@ -1041,12 +966,13 @@ export async function createApp() {
       };
       const mkNum = (k: string) => parseInt(k.slice(3), 10) * 100 + (MONTH_ABBR_TO_NUM[k.slice(0, 3)] ?? 0);
 
-      // Fetch all active employees (include schedule for overtime recalculation from time_entries)
+      // Fetch all active employees — use schedules(*) to avoid PostgREST errors when
+      // the schedules table uses camelCase column names (expectedWork from Prisma).
       const { data: emps, error: empErr } = await supabase
         .from("employees")
-        .select("id,name,cpf,registration,departments(name),schedules(expected_work,lunch_minutes)")
+        .select("id,name,cpf,registration,departments(name),schedules(*)")
         .order("name");
-      if (empErr) throw new Error(empErr.message);
+      if (empErr) throw new Error(`employees query: ${empErr.message}`);
       if (!emps || emps.length === 0) return res.json({ success: true, employees: [] });
 
       const empIds = emps.map((e: any) => e.id);
@@ -1059,7 +985,7 @@ export async function createApp() {
         .in(BANK_EMP_COL, empIds)
         .order("date", { ascending: true })
         .limit(10000);
-      if (seedsErr) throw new Error(seedsErr.message);
+      if (seedsErr) throw new Error(`seeds query: ${seedsErr.message}`);
 
       // Build seed map: empId → { monthKey → minutes }
       const seedsByEmp: Record<string, Record<string, number>> = {};
@@ -1086,19 +1012,49 @@ export async function createApp() {
         bankTotalByEmp[eid] = (bankTotalByEmp[eid] || 0) + mins;
       }
 
-      // Fetch all attendance records from Jan 2026 onwards — one batch query
+      // Determine earliest start date needed from seeds to minimise row count.
+      // Supabase PostgREST caps at max_rows (default 1000). Starting from the month
+      // after the oldest seed (instead of 2026-01-01) keeps the result set small enough.
+      let minStartYear = currentYear, minStartMonth = currentMonth;
+      for (const empSeeds of Object.values(seedsByEmp)) {
+        for (const mk of Object.keys(empSeeds)) {
+          const abbr = mk.slice(0, 3);
+          const yr = parseInt(mk.slice(3), 10);
+          const mo = (MONTH_ABBR_TO_NUM[abbr] ?? 0) + 1;
+          const sY = mo > 12 ? yr + 1 : yr;
+          const sM = mo > 12 ? 1 : mo;
+          if (sY < minStartYear || (sY === minStartYear && sM < minStartMonth)) {
+            minStartYear = sY; minStartMonth = sM;
+          }
+        }
+      }
+      // If no seeds, fall back to start of current year
+      if (Object.keys(seedsByEmp).length === 0) { minStartYear = currentYear; minStartMonth = 1; }
+      const recStartDate = `${minStartYear}-${String(minStartMonth).padStart(2, "0")}-01`;
+
+      // Fetch attendance records — paginated to handle Supabase row limits (default 1000/page)
       const lastDayOfCurrentMonth = new Date(currentYear, currentMonth, 0).getDate();
-      // Supabase PostgREST default row limit is 1000 — must explicitly set limit higher
-      // 55 employees × 26 days × 7 months ≈ 10,010 rows max; 50,000 is safe
-      const { data: allRecs, error: recsErr } = await supabase
-        .from("attendance_records")
-        .select("employee_id, date, status, overtime50, overtime100, total_work")
-        .in("employee_id", empIds)
-        .gte("date", "2026-01-01")
-        .lte("date", `${currentYear}-${String(currentMonth).padStart(2,"0")}-${String(lastDayOfCurrentMonth).padStart(2,"0")}`)
-        .order("date")
-        .limit(50000);
-      if (recsErr) throw new Error(recsErr.message);
+      const recEndDate = `${currentYear}-${String(currentMonth).padStart(2,"0")}-${String(lastDayOfCurrentMonth).padStart(2,"0")}`;
+      let allRecs: any[] = [];
+      {
+        let from = 0;
+        const PAGE = 1000;
+        for (let page = 0; page < 20; page++) {
+          const { data: chunk, error: chunkErr } = await supabase
+            .from("attendance_records")
+            .select("employee_id, date, status, overtime50, overtime100, total_work")
+            .in("employee_id", empIds)
+            .gte("date", recStartDate)
+            .lte("date", recEndDate)
+            .order("date")
+            .range(from, from + PAGE - 1);
+          if (chunkErr) throw new Error(`attendance query page ${page}: ${chunkErr.message}`);
+          if (!chunk || chunk.length === 0) break;
+          allRecs = allRecs.concat(chunk);
+          if (chunk.length < PAGE) break;
+          from += PAGE;
+        }
+      }
 
       // Index records by empId → date prefix
       const recsByEmp: Record<string, { date: string; overtime50: number; overtime100: number; total_work: number | null; status: string }[]> = {};
@@ -1117,15 +1073,10 @@ export async function createApp() {
       const LEAVE_FOR_PIN = new Set(["VACATION","PREMIUM_LEAVE","HOLIDAY","OFF_DAY"]);
 
       const employees = emps.map((emp: any) => {
-        const empExpected: number = emp.schedules?.expected_work ?? 480;
-        const empLunch: number   = emp.schedules?.lunch_minutes  ?? 60;
-        // Merge DB seeds with spreadsheet MAI2026 value (DB takes precedence if present)
-        const dbSeeds = seedsByEmp[emp.id] ?? {};
-        const excelMai = EXCEL_MAI2026_BY_NAME[normEmpName(emp.name ?? "")];
-        const seeds: Record<string, number> = {
-          ...("MAI2026" in dbSeeds ? {} : (excelMai !== undefined ? { MAI2026: excelMai } : {})),
-          ...dbSeeds,
-        };
+        // Handle both Prisma camelCase (expectedWork) and snake_case (expected_work)
+        const sc = emp.schedules;
+        const empExpected: number = sc ? (sc.expected_work ?? sc.expectedWork ?? 480) : 480;
+        const seeds: Record<string, number> = { ...(seedsByEmp[emp.id] ?? {}) };
         const recs  = recsByEmp[emp.id]  ?? [];
 
         // Determine starting point: prefer DEZ2025 seed → full history
