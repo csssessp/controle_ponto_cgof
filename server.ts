@@ -1090,10 +1090,9 @@ export async function createApp() {
       const lastDayOfCurrentMonth = new Date(currentYear, currentMonth, 0).getDate();
       // Supabase PostgREST default row limit is 1000 — must explicitly set limit higher
       // 55 employees × 26 days × 7 months ≈ 10,010 rows max; 50,000 is safe
-      // Include time_entries so we can recalculate overtime when stored overtime50 = 0
       const { data: allRecs, error: recsErr } = await supabase
         .from("attendance_records")
-        .select("employee_id, date, status, overtime50, overtime100, total_work, time_entries(time, type)")
+        .select("employee_id, date, status, overtime50, overtime100, total_work")
         .in("employee_id", empIds)
         .gte("date", "2026-01-01")
         .lte("date", `${currentYear}-${String(currentMonth).padStart(2,"0")}-${String(lastDayOfCurrentMonth).padStart(2,"0")}`)
@@ -1102,7 +1101,7 @@ export async function createApp() {
       if (recsErr) throw new Error(recsErr.message);
 
       // Index records by empId → date prefix
-      const recsByEmp: Record<string, { date: string; overtime50: number; overtime100: number; total_work: number | null; status: string; time_entries?: any[] }[]> = {};
+      const recsByEmp: Record<string, { date: string; overtime50: number; overtime100: number; total_work: number | null; status: string }[]> = {};
       for (const r of allRecs || []) {
         const eid = r.employee_id;
         if (!recsByEmp[eid]) recsByEmp[eid] = [];
@@ -1112,7 +1111,6 @@ export async function createApp() {
           overtime100: r.overtime100 || 0,
           total_work: r.total_work ?? null,
           status: r.status,
-          time_entries: (r as any).time_entries,
         });
       }
 
@@ -1170,19 +1168,14 @@ export async function createApp() {
           const prefix = `${y}-${String(m).padStart(2, "0")}`;
           const monthRecs = recs.filter(r => r.date.startsWith(prefix) && !LEAVE_FOR_PIN.has(r.status));
           const totalExtras = monthRecs.reduce((s, r) => {
-            // Prefer stored overtime50/overtime100 when total_work is set (server computed it correctly).
-            // When total_work is null (record has time_entries but no stored computation), recalculate.
-            if (r.total_work != null) return s + (r.overtime50 || 0) + (r.overtime100 || 0);
-            const te: any[] = r.time_entries || [];
-            if (te.length > 0) {
-              const entries = te.map((e: any) => ({
-                time: typeof e.time === "string" && e.time.length > 5 ? e.time.substring(11, 16) : e.time,
-                type: e.type,
-              }));
-              const calc = calculateWorkHours(entries, empExpected, empLunch);
-              return s + calc.overtime50Minutes;
+            let ot = (r.overtime50 || 0) + (r.overtime100 || 0);
+            // Fallback: if stored overtime = 0 but total_work > expected, derive overtime from total_work.
+            // This handles records where time_entries were added after the initial upload
+            // without recomputing attendance_records.overtime50.
+            if (ot === 0 && r.total_work != null && r.total_work > empExpected) {
+              ot = r.total_work - empExpected;
             }
-            return s + (r.overtime50 || 0) + (r.overtime100 || 0);
+            return s + ot;
           }, 0);
           // bonusGoal: monthly target to earn PIN bonus (may be 2880 in Apr/Jun/Jul per Decreto)
           // bankGoal: always 2400 (40h) — only excess over 40h goes to banco de horas

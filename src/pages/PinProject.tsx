@@ -726,7 +726,7 @@ export default function PinProject() {
                   <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Mar/26<br/><span className="text-[9px] font-normal opacity-60">meta 40h</span></th>
                   <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Abr/26<br/><span className="text-[9px] font-normal opacity-60">meta 48h ★</span></th>
                   <th className="px-3 py-2.5 text-center font-semibold text-foreground bg-blue-50/60">
-                    Mai/26 Acumulado<br/><span className="text-[9px] font-normal opacity-60">meta 40h</span>
+                    Mai/26<br/><span className="text-[9px] font-normal opacity-60">meta 40h</span>
                   </th>
                   {/* Dynamic columns for months after May 2026 (auto-calculated from espelho de ponto) */}
                   {allDynamicMonthKeys.map(mk => {
@@ -788,7 +788,7 @@ export default function PinProject() {
                           <MonthBar min={min} goal={mi === 3 ? PIN_GOALS.abr : PIN_GOALS.jan} />
                         </td>
                       ))}
-                      {/* Mai/26 Acumulado — destaque */}
+                      {/* Mai/26 — destaque */}
                       <td className={cn("px-3 py-2 text-center bg-blue-50/40", !hasMay && "opacity-50")}>
                         {hasMay ? (
                           <div className="flex flex-col items-center gap-0.5">
