@@ -793,7 +793,6 @@ export async function createApp() {
       const { data: emps, error: empErr } = await supabase
         .from("employees")
         .select("id,name,cpf,registration,departments(name)")
-        .eq("status", "ATIVO")
         .order("name");
       if (empErr) throw new Error(empErr.message);
 
@@ -954,7 +953,6 @@ export async function createApp() {
       const { data: emps, error: empErr } = await supabase
         .from("employees")
         .select("id,name,cpf,registration,departments(name)")
-        .eq("status", "ATIVO")
         .order("name");
       if (empErr) throw new Error(empErr.message);
       if (!emps || emps.length === 0) return res.json({ success: true, employees: [] });
