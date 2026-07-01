@@ -731,9 +731,9 @@ export default function TimeCard() {
           const [ry, rm] = dateStr.split("-").map(Number);
           const recYM = ry * 12 + rm;
 
-          // Only include months >= cutoff and BEFORE the currently viewed month
-          // (current month's contribution comes from live `totals.bank`)
-          if (recYM < cutoffYM || recYM >= viewedYM) continue;
+          // Only include months AFTER the cutoff (seed already covers the cutoff month)
+          // and BEFORE the currently viewed month (current month comes from live `totals.bank`)
+          if (recYM <= cutoffYM || recYM >= viewedYM) continue;
 
           const calc = rec.time_entries?.length
             ? calcHours(rec.time_entries, expected, lunch)
@@ -921,7 +921,7 @@ export default function TimeCard() {
       const dateStr = rec.date.substring(0, 10);
       const [ry, rm] = dateStr.split("-").map(Number);
       const recYM = ry * 12 + rm;
-      if (cutoffYM !== null && recYM < cutoffYM) continue;
+      if (cutoffYM !== null && recYM <= cutoffYM) continue; // seed already covers cutoff month
       if (recYM > viewedYM) continue;
 
       const calc = rec.time_entries?.length

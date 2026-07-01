@@ -673,17 +673,18 @@ export async function createApp() {
   // ── Time Bank ─────────────────────────────────────────────────────────────
   app.get("/api/time-bank/:employeeId", async (req, res) => {
     try {
+      const empId = req.params.employeeId;
       const { data, error } = await supabase
         .from(BANK_TABLE)
         .select("*")
-        .eq(BANK_EMP_COL, req.params.employeeId)
+        .eq(BANK_EMP_COL, empId)
         .order("date", { ascending: false });
       if (error) {
         console.error("[time-bank GET]", error.message, error.details, "table:", BANK_TABLE);
         throw new Error(error.message);
       }
       // Normalize to snake_case for frontend regardless of which table was used
-      const entries = (data || []).map((r: any) => ({
+      let entries = (data || []).map((r: any) => ({
         id: r.id,
         employee_id: r.employee_id ?? r.employeeId,
         minutes: r.minutes,
@@ -692,6 +693,27 @@ export async function createApp() {
         type: r.type,
         created_at: r.created_at ?? r.createdAt,
       }));
+
+      // If no PIN_SEED_MAI2026 exists in DB, inject a virtual one from the spreadsheet data.
+      // This ensures TimeCard and Employees pages compute the correct accumulated bank
+      // anchored to the verified May 2026 balance, without requiring a manual import step.
+      const hasMai2026 = entries.some((e: any) => e.type === "PIN_SEED_MAI2026");
+      if (!hasMai2026) {
+        const { data: empRow } = await supabase
+          .from("employees").select("name").eq("id", empId).single();
+        if (empRow?.name) {
+          const excelMai = EXCEL_MAI2026_BY_NAME[normEmpName(empRow.name)];
+          if (excelMai !== undefined) {
+            entries = [
+              { id: "virtual-mai2026", employee_id: empId, minutes: excelMai,
+                date: "2026-05-31", description: "Saldo Mai/26 (planilha)", type: "PIN_SEED_MAI2026",
+                created_at: "2026-05-31" },
+              ...entries,
+            ];
+          }
+        }
+      }
+
       // If PIN_SEED_* entries exist, use the latest one as the authoritative balance base.
       // All entries before the latest PIN_SEED date are superseded by it.
       const pinSeeds = entries
@@ -1019,10 +1041,10 @@ export async function createApp() {
       };
       const mkNum = (k: string) => parseInt(k.slice(3), 10) * 100 + (MONTH_ABBR_TO_NUM[k.slice(0, 3)] ?? 0);
 
-      // Fetch all active employees
+      // Fetch all active employees (include schedule for overtime recalculation from time_entries)
       const { data: emps, error: empErr } = await supabase
         .from("employees")
-        .select("id,name,cpf,registration,departments(name)")
+        .select("id,name,cpf,registration,departments(name),schedules(expected_work,lunch_minutes)")
         .order("name");
       if (empErr) throw new Error(empErr.message);
       if (!emps || emps.length === 0) return res.json({ success: true, employees: [] });
@@ -1068,9 +1090,10 @@ export async function createApp() {
       const lastDayOfCurrentMonth = new Date(currentYear, currentMonth, 0).getDate();
       // Supabase PostgREST default row limit is 1000 — must explicitly set limit higher
       // 55 employees × 26 days × 7 months ≈ 10,010 rows max; 50,000 is safe
+      // Include time_entries so we can recalculate overtime when stored overtime50 = 0
       const { data: allRecs, error: recsErr } = await supabase
         .from("attendance_records")
-        .select("employee_id, date, status, overtime50, overtime100")
+        .select("employee_id, date, status, overtime50, overtime100, total_work, time_entries(time, type)")
         .in("employee_id", empIds)
         .gte("date", "2026-01-01")
         .lte("date", `${currentYear}-${String(currentMonth).padStart(2,"0")}-${String(lastDayOfCurrentMonth).padStart(2,"0")}`)
@@ -1079,16 +1102,25 @@ export async function createApp() {
       if (recsErr) throw new Error(recsErr.message);
 
       // Index records by empId → date prefix
-      const recsByEmp: Record<string, { date: string; overtime50: number; overtime100: number; status: string }[]> = {};
+      const recsByEmp: Record<string, { date: string; overtime50: number; overtime100: number; total_work: number | null; status: string; time_entries?: any[] }[]> = {};
       for (const r of allRecs || []) {
         const eid = r.employee_id;
         if (!recsByEmp[eid]) recsByEmp[eid] = [];
-        recsByEmp[eid].push({ date: r.date, overtime50: r.overtime50 || 0, overtime100: r.overtime100 || 0, status: r.status });
+        recsByEmp[eid].push({
+          date: r.date,
+          overtime50: r.overtime50 || 0,
+          overtime100: r.overtime100 || 0,
+          total_work: r.total_work ?? null,
+          status: r.status,
+          time_entries: (r as any).time_entries,
+        });
       }
 
       const LEAVE_FOR_PIN = new Set(["VACATION","PREMIUM_LEAVE","HOLIDAY","OFF_DAY"]);
 
       const employees = emps.map((emp: any) => {
+        const empExpected: number = emp.schedules?.expected_work ?? 480;
+        const empLunch: number   = emp.schedules?.lunch_minutes  ?? 60;
         // Merge DB seeds with spreadsheet MAI2026 value (DB takes precedence if present)
         const dbSeeds = seedsByEmp[emp.id] ?? {};
         const excelMai = EXCEL_MAI2026_BY_NAME[normEmpName(emp.name ?? "")];
@@ -1137,7 +1169,21 @@ export async function createApp() {
         while (y < currentYear || (y === currentYear && m <= currentMonth)) {
           const prefix = `${y}-${String(m).padStart(2, "0")}`;
           const monthRecs = recs.filter(r => r.date.startsWith(prefix) && !LEAVE_FOR_PIN.has(r.status));
-          const totalExtras = monthRecs.reduce((s, r) => s + r.overtime50 + r.overtime100, 0);
+          const totalExtras = monthRecs.reduce((s, r) => {
+            // Prefer stored overtime50/overtime100 when total_work is set (server computed it correctly).
+            // When total_work is null (record has time_entries but no stored computation), recalculate.
+            if (r.total_work != null) return s + (r.overtime50 || 0) + (r.overtime100 || 0);
+            const te: any[] = r.time_entries || [];
+            if (te.length > 0) {
+              const entries = te.map((e: any) => ({
+                time: typeof e.time === "string" && e.time.length > 5 ? e.time.substring(11, 16) : e.time,
+                type: e.type,
+              }));
+              const calc = calculateWorkHours(entries, empExpected, empLunch);
+              return s + calc.overtime50Minutes;
+            }
+            return s + (r.overtime50 || 0) + (r.overtime100 || 0);
+          }, 0);
           // bonusGoal: monthly target to earn PIN bonus (may be 2880 in Apr/Jun/Jul per Decreto)
           // bankGoal: always 2400 (40h) — only excess over 40h goes to banco de horas
           const bonusGoal = PIN_MONTH_GOALS[m] ?? 2400;
