@@ -801,6 +801,59 @@ export async function createApp() {
 
   // ── PIN Project / Saldos Acumulados ──────────────────────────────────────
   const PIN_SEED_TYPE = "PIN_SEED_MAI2026";
+
+  // Spreadsheet accumulated values through May 2026 — used as MAI2026 seed when not in DB.
+  // Keys are lowercase names with accents stripped (NFD + remove combining chars).
+  const normEmpName = (s: string) =>
+    s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+  const EXCEL_MAI2026_BY_NAME: Record<string, number> = {
+    "adan freire pereira": 2358,
+    "adriana cristina de jesus azevedo": 1141,
+    "ana paula da silva": -159,
+    "eliana franco pereira": -283,
+    "gabriela fernanda vergueiro": 1440,
+    "susana serafim cirino": 1517,
+    "beatriz puga rodrigues": -404,
+    "dione maria lisboa pereira": -219,
+    "fabio luis pozzo": 11073,
+    "gabriela piccardi gonzales": 132,
+    "roseli aparecida rodrigues colombo": 3046,
+    "bruno marcelo lopes santos": 2418,
+    "clemilson santos cobra": 5743,
+    "dario besseler": 2098,
+    "edna miyuki baba": 39441,
+    "wander heleno salles": 3220,
+    "arlete shirley pereira de carvalho": 2097,
+    "elenice orpheu alves de souza": -606,
+    "elza tatsuo samecima": 12096,
+    "fernanda da silva e souza": 779,
+    "gilmar marciano dos santos": 1398,
+    "joao carlos ferreira de souza": -980,
+    "jomara simoes dos santos": 1027,
+    "karen de oliveira delfino": -407,
+    "luiz andrade": 292,
+    "marilsa da silva e silva": 490,
+    "maristela aparecida raphael": 2424,
+    "marta conceicao de moura": 5773,
+    "renato espirito santo dias tatit": 1018,
+    "roberto carlos santana": 922,
+    "ronaldo hilario dos santos": 1208,
+    "tania cristina begosso": 4624,
+    "thiago almeida da silva": -712,
+    "alexsandra bertaco severino": 1168,
+    "cesar moreira constantino": 2973,
+    "claudenice da silva": 4,
+    "conceicao ap. panissi martins": 7044,
+    "conceicao aparecida panissi martins": 7044,
+    "cleber farias dos santos": 6790,
+    "diego barbosa dos santos": 2563,
+    "fernando cesar barboza": 3321,
+    "jose luiz dos santos moreira": -43,
+    "jose romao batista": 1028,
+    "luiz carlos bazalia dos santos": 6837,
+    "mateus ribeiro da silva": 3733,
+    "thais cristina nascimento barbosa": 2334,
+  };
   // PIN_MONTH_GOALS and PIN_MONTH_ABBR are now module-level (configurable by admin)
 
   // GET all active employees with their PIN_SEED_* balances (all months)
@@ -1036,7 +1089,13 @@ export async function createApp() {
       const LEAVE_FOR_PIN = new Set(["VACATION","PREMIUM_LEAVE","HOLIDAY","OFF_DAY"]);
 
       const employees = emps.map((emp: any) => {
-        const seeds = seedsByEmp[emp.id] ?? {};
+        // Merge DB seeds with spreadsheet MAI2026 value (DB takes precedence if present)
+        const dbSeeds = seedsByEmp[emp.id] ?? {};
+        const excelMai = EXCEL_MAI2026_BY_NAME[normEmpName(emp.name ?? "")];
+        const seeds: Record<string, number> = {
+          ...("MAI2026" in dbSeeds ? {} : (excelMai !== undefined ? { MAI2026: excelMai } : {})),
+          ...dbSeeds,
+        };
         const recs  = recsByEmp[emp.id]  ?? [];
 
         // Determine starting point: prefer DEZ2025 seed → full history

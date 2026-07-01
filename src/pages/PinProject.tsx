@@ -267,27 +267,37 @@ export default function PinProject() {
         }
 
         // Override accumulated values using EXCEL_DATA maiAcumMin as the authoritative base.
-        // The server auto-balances may not have the correct monthly seeds in the DB,
-        // so we anchor the Jun+ calculation to the known May accumulated from the spreadsheet.
-        const normCpf = (s: string) => s.replace(/\D/g, "");
-        for (const emp of ja.employees as any[]) {
-          if (!emp.id || !map[emp.id]) continue;
-          const excelEntry = EXCEL_DATA.find(ex =>
-            ex.cpf && emp.cpf && normCpf(ex.cpf) === normCpf(emp.cpf)
-          );
-          const base = excelEntry?.maiAcumMin ?? null;
-          if (base === null || base === undefined) continue;
+        // Many employees have null CPF in the DB, so we match by name as fallback.
+        const normCpfFn = (s: string) => s.replace(/\D/g, "");
+        const stripAcc = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+        const normNameFn = (s: string) => stripAcc(s).toLowerCase().replace(/\s+/g, " ").trim();
 
-          // Recompute accumulated for all dynamic months starting from maiAcumMin
-          const dynamicMks = Object.keys(map[emp.id])
+        for (const ex of EXCEL_DATA) {
+          if (ex.maiAcumMin === null || ex.maiAcumMin === undefined) continue;
+
+          // Find server employee by CPF first, then by name
+          let serverEmp: any = null;
+          if (ex.cpf) {
+            serverEmp = (ja.employees as any[]).find((e: any) =>
+              e.cpf && normCpfFn(e.cpf) === normCpfFn(ex.cpf)
+            );
+          }
+          if (!serverEmp) {
+            serverEmp = (ja.employees as any[]).find((e: any) =>
+              normNameFn(e.name) === normNameFn(ex.nome)
+            );
+          }
+          if (!serverEmp || !serverEmp.id || !map[serverEmp.id]) continue;
+
+          const dynamicMks = Object.keys(map[serverEmp.id])
             .filter(mk => monthKeyToNum(mk) > STATIC_MONTH_NUM)
             .sort((a, b) => monthKeyToNum(a) - monthKeyToNum(b));
 
-          let accumulated = base;
+          let accumulated = ex.maiAcumMin;
           for (const mk of dynamicMks) {
-            const data = map[emp.id][mk];
-            accumulated += data.extras - 2400; // bankGoal always 40h
-            map[emp.id][mk] = { ...data, acum: accumulated, noSeedMode: false };
+            const data = map[serverEmp.id][mk];
+            accumulated += (data.extras ?? 0) - 2400;
+            map[serverEmp.id][mk] = { ...data, acum: accumulated, noSeedMode: false };
           }
         }
 
