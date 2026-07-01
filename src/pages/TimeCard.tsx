@@ -745,12 +745,12 @@ export default function TimeCard() {
           monthExtras[mk].ot += calc.ot;
         }
 
-        // PIN deduction per historical month — use the correct goal per month (not always 2400)
+        // PIN deduction for banco de horas: always 40h (2400 min) per month.
+        // The variable monthly goals (2880 for Apr/Jun/Jul) are for bonus tracking only.
         let pinDed = 0;
         if (emp.pin_project) {
-          for (const { ot, month } of Object.values(monthExtras)) {
-            const goal = pinMonthGoals[month] ?? 2400;
-            pinDed += Math.min(ot, goal);
+          for (const { ot } of Object.values(monthExtras)) {
+            pinDed += Math.min(ot, 2400);
           }
         }
 
@@ -857,8 +857,9 @@ export default function TimeCard() {
   const viewedAfterCutoff = bankCutoff
     ? (year > bankCutoff.year || (year === bankCutoff.year && month >= bankCutoff.month))
     : true;
-  const currentMonthPinGoal = pinMonthGoals[month] ?? 2400;
-  const currentPinDeduction = (selectedEmp?.pin_project && viewedAfterCutoff) ? Math.min(totals.extra, currentMonthPinGoal) : 0;
+  const currentMonthPinGoal = pinMonthGoals[month] ?? 2400; // for bonus progress display only
+  // For banco de horas, always deduct 40h (2400 min) — Decreto higher goals are for bonus tracking only
+  const currentPinDeduction = (selectedEmp?.pin_project && viewedAfterCutoff) ? Math.min(totals.extra, 2400) : 0;
   const totalAccumulatedBank = viewedAfterCutoff
     ? bankSeedTotal + historicalBankDelta + totals.bank - historicalPinDed - currentPinDeduction
     : bankSeedTotal;
@@ -932,12 +933,10 @@ export default function TimeCard() {
       monthExtras[mk] = (monthExtras[mk] || 0) + calc.ot;
     }
 
-    // PIN deduction per month — use correct monthly goal (not always 2400)
+    // PIN deduction for banco de horas: always 40h (2400 min) — bonus goals are separate
     if (emp.pin_project) {
-      for (const [mk, extras] of Object.entries(monthExtras)) {
-        const rm = parseInt(mk.split("-")[1]);
-        const goal = pinMonthGoals[rm] ?? 2400;
-        accumulated -= Math.min(extras, goal);
+      for (const extras of Object.values(monthExtras)) {
+        accumulated -= Math.min(extras, 2400);
       }
     }
 

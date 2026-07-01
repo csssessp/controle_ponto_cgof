@@ -995,6 +995,22 @@ export async function createApp() {
         seedsByEmp[eid][mk] = s.minutes;
       }
 
+      // Fetch regular bank entries (non-PIN_SEED) to use as fallback starting balance
+      const { data: allBankEntries } = await supabase
+        .from(BANK_TABLE)
+        .select("employee_id, employeeId, type, minutes")
+        .not("type", "like", "PIN_SEED_%")
+        .in(BANK_EMP_COL, empIds)
+        .limit(10000);
+
+      // Sum regular bank entries per employee (credit adds, debit subtracts)
+      const bankTotalByEmp: Record<string, number> = {};
+      for (const e of allBankEntries || []) {
+        const eid = e.employee_id ?? e.employeeId;
+        const mins = e.type === "debit" ? -(e.minutes || 0) : (e.minutes || 0);
+        bankTotalByEmp[eid] = (bankTotalByEmp[eid] || 0) + mins;
+      }
+
       // Fetch all attendance records from Jan 2026 onwards — one batch query
       const lastDayOfCurrentMonth = new Date(currentYear, currentMonth, 0).getDate();
       // Supabase PostgREST default row limit is 1000 — must explicitly set limit higher
@@ -1041,11 +1057,12 @@ export async function createApp() {
           if (startM > 12) { startM = 1; startY++; }
           accumulated = seeds[startMk];
         } else if (recs.length > 0) {
-          // No seed — start from earliest attendance month, accumulated = 0
+          // No PIN_SEED — use regular bank entries balance as starting point
           noSeedMode = true;
           const firstDate = recs.reduce((a, b) => a.date < b.date ? a : b).date;
           const [fy, fm] = firstDate.substring(0, 7).split("-").map(Number);
-          startY = fy; startM = fm; accumulated = 0;
+          startY = fy; startM = fm;
+          accumulated = bankTotalByEmp[emp.id] ?? 0;
         } else {
           // No seed, no records — nothing to show
           return { id: emp.id, name: emp.name, cpf: emp.cpf, autoMonths: {}, hasAnySeed: false };
@@ -1062,8 +1079,11 @@ export async function createApp() {
           const prefix = `${y}-${String(m).padStart(2, "0")}`;
           const monthRecs = recs.filter(r => r.date.startsWith(prefix) && !LEAVE_FOR_PIN.has(r.status));
           const totalExtras = monthRecs.reduce((s, r) => s + r.overtime50 + r.overtime100, 0);
-          const goal = PIN_MONTH_GOALS[m] ?? 2400;
-          const monthDelta = totalExtras - goal;
+          // bonusGoal: monthly target to earn PIN bonus (may be 2880 in Apr/Jun/Jul per Decreto)
+          // bankGoal: always 2400 (40h) — only excess over 40h goes to banco de horas
+          const bonusGoal = PIN_MONTH_GOALS[m] ?? 2400;
+          const bankGoal = 2400;
+          const monthDelta = totalExtras - bankGoal;
           accumulated += monthDelta;
 
           const abbr = PIN_MONTH_ABBR[m] ?? "???";
@@ -1074,10 +1094,9 @@ export async function createApp() {
           // Manual seed override for this month takes precedence
           if (mk in seeds) {
             accumulated = seeds[mk];
-            autoMonths[mk] = { acum: seeds[mk], extras: totalExtras, goal, recordCount: monthRecs.length, isComplete, isCurrentMonth, noSeedMode: false };
+            autoMonths[mk] = { acum: seeds[mk], extras: totalExtras, goal: bonusGoal, recordCount: monthRecs.length, isComplete, isCurrentMonth, noSeedMode: false };
           } else {
-            // In noSeedMode, acum is relative (from 0, not absolute)
-            autoMonths[mk] = { acum: noSeedMode ? accumulated : accumulated, extras: totalExtras, goal, recordCount: monthRecs.length, isComplete, isCurrentMonth, noSeedMode };
+            autoMonths[mk] = { acum: accumulated, extras: totalExtras, goal: bonusGoal, recordCount: monthRecs.length, isComplete, isCurrentMonth, noSeedMode };
           }
 
           m++;
