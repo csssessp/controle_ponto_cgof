@@ -90,8 +90,8 @@ function Sidebar() {
       )}
     >
       <div className="h-20 flex items-center justify-center border-b border-white/10 shrink-0">
-        <Button variant="ghost" size="icon" onClick={toggleSidebar} className="text-white/70 hover:text-white hover:bg-white/10">
-          <Menu className="w-5 h-5" />
+        <Button variant="ghost" size="icon" onClick={toggleSidebar} className="w-12 h-12 text-white/70 hover:text-white hover:bg-white/10">
+          <Menu className="w-6 h-6" />
         </Button>
       </div>
 
@@ -242,11 +242,11 @@ function Topbar() {
   return (
     <header className="h-16 border-b border-white/10 bg-[#0f2044] sticky top-0 z-40 px-6 flex items-center justify-between shadow-lg">
       <div className="flex items-center gap-4">
-        <Link to="/ponto" className="flex items-center h-10 shrink-0">
+        <Link to="/ponto" className="flex items-center h-14 shrink-0">
           <img
             src="/img/BRASAO-3-texto-branco.png"
             alt="CGOF"
-            className="object-contain h-10 w-auto"
+            className="object-contain h-14 w-auto"
           />
         </Link>
         <div className="hidden md:flex flex-col leading-tight">
