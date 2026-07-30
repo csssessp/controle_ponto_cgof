@@ -89,7 +89,7 @@ function Sidebar() {
         "transition-all duration-300 ease-in-out"
       )}
     >
-      <div className="h-20 flex items-center border-b border-white/10 shrink-0 px-4">
+      <div className="h-20 flex items-center border-b border-white/10 shrink-0 px-4 overflow-hidden">
         <Link to="/ponto" className="flex items-center h-full min-w-0 py-1">
           <img
             src="/img/BRASAO-3-texto-branco.png"
