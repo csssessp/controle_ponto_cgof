@@ -92,7 +92,7 @@ function Sidebar() {
       <div className={cn("h-20 flex items-center border-b border-white/10 shrink-0", sidebarOpen ? "px-4 justify-between" : "justify-center")}>
         <Link to="/ponto" className={cn("flex items-center h-full", sidebarOpen ? "min-w-0 py-1" : "p-1")}>
           <img
-            src="/img/logo1.png"
+            src="/img/BRASAO-3-texto-branco.png"
             alt="CGOF"
             className={cn("object-contain transition-all", sidebarOpen ? "h-[72px] w-auto max-w-[220px]" : "w-16 h-16")}
           />
