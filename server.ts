@@ -6,6 +6,7 @@ import https from "https";
 import dotenv from "dotenv";
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
+import { findPinHistorical } from "./src/lib/pinHistoricalData.js";
 
 dotenv.config();
 
@@ -31,15 +32,27 @@ let BANK_TABLE = "time_bank_entries";
 let BANK_EMP_COL = "employee_id";
 
 // ── PIN Project configuration (module-level, updatable by admin) ──────────────
-// Decreto nº 70.273/2025 — Apr, Jun, Jul = 48h (feriado); todos os outros = 40h
+// Decreto nº 70.273/2025 — Apr, Jun, Jul, Nov = 48h (feriado); todos os outros = 40h
 let PIN_MONTH_GOALS: Record<number, number> = {
   1: 2400, 2: 2400, 3: 2400, 4: 2880, 5: 2400,
-  6: 2880, 7: 2880, 8: 2400, 9: 2400, 10: 2400, 11: 2400, 12: 2400,
+  6: 2880, 7: 2880, 8: 2400, 9: 2400, 10: 2400, 11: 2880, 12: 2400,
 };
 const PIN_MONTH_ABBR: Record<number, string> = {
   1: "JAN", 2: "FEV", 3: "MAR", 4: "ABR", 5: "MAI",
   6: "JUN", 7: "JUL", 8: "AGO", 9: "SET", 10: "OUT", 11: "NOV", 12: "DEZ",
 };
+const PIN_MONTH_ABBR_TO_NUM: Record<string, number> = {
+  JAN:1, FEV:2, MAR:3, ABR:4, MAI:5, JUN:6, JUL:7, AGO:8, SET:9, OUT:10, NOV:11, DEZ:12,
+};
+// "JUL2026" -> "2026-07-31" (last day of that month), for dating a PIN_SEED_{monthKey} row
+function pinMonthKeyToDate(monthKey: string): string | null {
+  const abbr = monthKey.slice(0, 3).toUpperCase();
+  const year = parseInt(monthKey.slice(3), 10);
+  const month = PIN_MONTH_ABBR_TO_NUM[abbr];
+  if (!month || isNaN(year)) return null;
+  const lastDay = new Date(year, month, 0).getDate();
+  return `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+}
 
 async function loadPinGoalsFromDb() {
   try {
@@ -173,6 +186,43 @@ export async function createApp() {
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", name: "Chronos Ponto API", timestamp: new Date().toISOString() });
+  });
+
+  // ── Auth (Supabase session + role) ───────────────────────────────────────
+  // Toda rota /api/* abaixo desta linha exige um token de sessão Supabase válido
+  // no header "Authorization: Bearer <token>" (/api/health fica de fora por já
+  // ter sido registrada acima). Anexa req.user = { id, email, role }.
+  app.use("/api", async (req, res, next) => {
+    try {
+      const authHeader = req.headers.authorization || "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+      if (!token) return res.status(401).json({ error: "Não autenticado" });
+      const { data, error } = await supabase.auth.getUser(token);
+      if (error || !data.user) return res.status(401).json({ error: "Sessão inválida ou expirada" });
+      const role = (data.user.app_metadata?.system_role || data.user.user_metadata?.system_role || "VIEWER") as string;
+      (req as any).user = { id: data.user.id, email: data.user.email, role };
+      next();
+    } catch {
+      res.status(401).json({ error: "Falha na autenticação" });
+    }
+  });
+
+  // Checagem de role: gestão de usuários e purga total exigem ADMIN; qualquer
+  // outra rota que altera dados (POST/PUT/PATCH/DELETE) exige ADMIN ou AUDITOR
+  // (VIEWER só pode ler). Mirrors the manual check already used in
+  // /api/admin/purge-attendance, aplicado agora de forma central.
+  app.use("/api", (req, res, next) => {
+    const user = (req as any).user as { role: string } | undefined;
+    const adminOnly = req.path.startsWith("/system-users") || req.path.startsWith("/admin/purge-attendance");
+    if (adminOnly) {
+      if (user?.role !== "ADMIN") return res.status(403).json({ error: "Acesso negado: requer perfil ADMIN" });
+      return next();
+    }
+    const isWrite = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+    if (isWrite && !["ADMIN", "AUDITOR"].includes(user?.role || "")) {
+      return res.status(403).json({ error: "Acesso negado: permissão insuficiente para modificar dados" });
+    }
+    next();
   });
 
   // ── Employees ─────────────────────────────────────────────────────────────
@@ -802,87 +852,40 @@ export async function createApp() {
   });
 
   // ── PIN Project / Saldos Acumulados ──────────────────────────────────────
-  const PIN_SEED_TYPE = "PIN_SEED_MAI2026";
+  // Jan–Jul/2026 são "congelados" com base na planilha oficial (src/lib/pinHistoricalData.ts).
+  // Este é o tipo de seed usado pelo botão "Importar" da tela — sempre o mês mais recente
+  // já congelado, que serve de âncora para o cálculo dinâmico (auto-balances) dos meses seguintes.
+  const PIN_SEED_TYPE = "PIN_SEED_JUL2026";
   // GET all active employees with their PIN_SEED_* balances (all months)
-  app.get("/api/pin-project/balances", async (_req, res) => {
-    try {
-      // All active employees (no pin_project filter — any employee can be in the spreadsheet)
-      const { data: emps, error: empErr } = await supabase
-        .from("employees")
-        .select("id,name,cpf,registration,departments(name)")
-        .order("name");
-      if (empErr) throw new Error(empErr.message);
-
-      const empIds = (emps || []).map((e: any) => e.id);
-      let seeds: any[] = [];
-      if (empIds.length > 0) {
-        const { data: bankData } = await supabase
-          .from(BANK_TABLE)
-          .select("*")
-          .like("type", "PIN_SEED_%")
-          .in(BANK_EMP_COL, empIds);
-        seeds = bankData || [];
-      }
-
-      // Build map: { employeeId: { "MAI2026": minutes, "JUN2026": minutes, ... } }
-      const seedMap: Record<string, Record<string, number>> = {};
-      for (const s of seeds) {
-        const eid = s.employee_id ?? s.employeeId;
-        const mKey = (s.type as string).replace("PIN_SEED_", "");
-        if (!seedMap[eid]) seedMap[eid] = {};
-        seedMap[eid][mKey] = s.minutes;
-      }
-
-      // All unique month keys that exist in the DB, sorted chronologically
-      const monthNumOf = (k: string) => {
-        const ABBR: Record<string, number> = { JAN:1,FEV:2,MAR:3,ABR:4,MAI:5,JUN:6,JUL:7,AGO:8,SET:9,OUT:10,NOV:11,DEZ:12 };
-        const yr = parseInt(k.slice(3), 10);
-        const mo = ABBR[k.slice(0, 3)] ?? 0;
-        return yr * 100 + mo;
-      };
-      const allMonthKeys = [...new Set(seeds.map((s: any) => (s.type as string).replace("PIN_SEED_", "")))]
-        .sort((a, b) => monthNumOf(a) - monthNumOf(b));
-
-      const result = (emps || []).map((e: any) => ({
-        id: e.id,
-        name: e.name,
-        cpf: e.cpf,
-        registration: e.registration,
-        department: e.departments?.name ?? null,
-        pinSeeds: seedMap[e.id] ?? {},
-        // backward-compat: May 2026 seed
-        pinSeedMinutes: seedMap[e.id]?.["MAI2026"] ?? null,
-      }));
-
-      res.json({ success: true, employees: result, monthKeys: allMonthKeys });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // POST import/upsert PIN seed balance for one employee
+  // POST import/upsert PIN seed balance for one employee, for ANY month — the
+  // one place an admin overrides a wrong/planilha-derived value. Body:
+  // { monthKey: "FEV2026" | "AGO2026" | ..., minutes: number, description? }
+  // `monthKey` defaults to PIN_SEED_TYPE's month for backward compatibility.
   app.post("/api/pin-project/balance/:employeeId", async (req, res) => {
     try {
       const { employeeId } = req.params;
       const { minutes, description } = req.body;
+      const monthKey: string = (req.body.monthKey || PIN_SEED_TYPE.replace("PIN_SEED_", "")).toUpperCase();
       if (minutes === undefined || minutes === null) return res.status(400).json({ error: "Informe os minutos" });
       const min = Number(minutes);
       if (isNaN(min)) return res.status(400).json({ error: "Valor inválido de minutos" });
+      const date = pinMonthKeyToDate(monthKey);
+      if (!date) return res.status(400).json({ error: `monthKey inválido: ${monthKey}` });
+      const seedType = `PIN_SEED_${monthKey}`;
 
-      // Delete any existing seed for this employee
+      // Replace any existing override for this employee/month
       await supabase
         .from(BANK_TABLE)
         .delete()
         .eq(BANK_EMP_COL, employeeId)
-        .eq("type", PIN_SEED_TYPE);
+        .eq("type", seedType);
 
-      // Insert new seed
       const record: Record<string, any> = {
         [BANK_EMP_COL]: employeeId,
         minutes: min,
-        date: "2026-05-31",
-        type: PIN_SEED_TYPE,
-        description: description || "Saldo acumulado PIN Projeto Jan–Mai/2026 (planilha)",
+        date,
+        type: seedType,
+        description: description || `Saldo acumulado PIN — ajuste manual (${monthKey})`,
       };
       const { data, error } = await supabase
         .from(BANK_TABLE)
@@ -891,62 +894,6 @@ export async function createApp() {
         .single();
       if (error) throw new Error(error.message);
       res.json({ success: true, entry: data });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // POST bulk import PIN seed balances
-  // Stores PIN_SEED_MAI2026 (accumulated through May) AND PIN_SEED_DEZ2025 (starting balance)
-  // Both seeds enable full auto-calculation from attendance records
-  app.post("/api/pin-project/import-bulk", async (req, res) => {
-    try {
-      const { entries } = req.body as {
-        entries: Array<{ employeeId: string; minutes: number; nome: string; saldoDezMin?: number }>;
-      };
-      if (!Array.isArray(entries) || entries.length === 0) return res.status(400).json({ error: "Nenhuma entrada fornecida" });
-
-      const results: Array<{ employeeId: string; nome: string; ok: boolean; error?: string }> = [];
-
-      for (const entry of entries) {
-        try {
-          const min = Number(entry.minutes);
-          if (isNaN(min)) { results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: false, error: "Minutos inválidos" }); continue; }
-
-          // Store May 2026 accumulated balance (PIN_SEED_MAI2026)
-          await supabase.from(BANK_TABLE).delete().eq(BANK_EMP_COL, entry.employeeId).eq("type", PIN_SEED_TYPE);
-          const { error: e1 } = await supabase.from(BANK_TABLE).insert([{
-            [BANK_EMP_COL]: entry.employeeId,
-            minutes: min,
-            date: "2026-05-31",
-            type: PIN_SEED_TYPE,
-            description: "Saldo acumulado PIN — Jan a Mai/2026 (planilha)",
-          }]);
-
-          // Also store December 2025 starting balance (PIN_SEED_DEZ2025) if provided
-          // This enables auto-calculation of Jan-May from attendance records
-          if (entry.saldoDezMin !== undefined && entry.saldoDezMin !== null) {
-            const dezMin = Number(entry.saldoDezMin);
-            if (!isNaN(dezMin)) {
-              await supabase.from(BANK_TABLE).delete().eq(BANK_EMP_COL, entry.employeeId).eq("type", "PIN_SEED_DEZ2025");
-              await supabase.from(BANK_TABLE).insert([{
-                [BANK_EMP_COL]: entry.employeeId,
-                minutes: dezMin,
-                date: "2025-12-31",
-                type: "PIN_SEED_DEZ2025",
-                description: "Saldo inicial PIN — Dez/2025 (planilha)",
-              }]);
-            }
-          }
-
-          results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: !e1, error: e1?.message });
-        } catch (e: any) {
-          results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: false, error: e.message });
-        }
-      }
-
-      const ok = results.filter(r => r.ok).length;
-      res.json({ success: true, imported: ok, total: results.length, results });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -970,7 +917,7 @@ export async function createApp() {
       // the schedules table uses camelCase column names (expectedWork from Prisma).
       const { data: emps, error: empErr } = await supabase
         .from("employees")
-        .select("id,name,cpf,registration,departments(name),schedules(*)")
+        .select("id,name,cpf,registration,pin_project,departments(name),schedules(*)")
         .order("name");
       if (empErr) throw new Error(`employees query: ${empErr.message}`);
       if (!emps || emps.length === 0) return res.json({ success: true, employees: [] });
@@ -1071,6 +1018,7 @@ export async function createApp() {
       }
 
       const LEAVE_FOR_PIN = new Set(["VACATION","PREMIUM_LEAVE","HOLIDAY","OFF_DAY"]);
+      const JUL2026_NUM = mkNum("JUL2026");
 
       const employees = emps.map((emp: any) => {
         // Handle both Prisma camelCase (expectedWork) and snake_case (expected_work)
@@ -1078,69 +1026,129 @@ export async function createApp() {
         const empExpected: number = sc ? (sc.expected_work ?? sc.expectedWork ?? 480) : 480;
         const seeds: Record<string, number> = { ...(seedsByEmp[emp.id] ?? {}) };
         const recs  = recsByEmp[emp.id]  ?? [];
+        const hist  = findPinHistorical(emp.name);
 
-        // Determine starting point: prefer DEZ2025 seed → full history
-        // Otherwise: latest seed; or if no seed, start from first attendance month (accumulated = 0)
-        const hasDezSeed = "DEZ2025" in seeds;
+        const autoMonths: Record<string, {
+          acum: number | null; extras: number; goal: number;
+          recordCount: number; isComplete: boolean; isCurrentMonth: boolean;
+          noSeedMode: boolean; isManualOverride?: boolean;
+        }> = {};
+
+        // ── Projeto PIN (membro atual): mês a mês Jan/2026 → mês atual ──────────
+        // Prioridade por mês: override manual (PIN_SEED_{mk}) > planilha oficial
+        // (Jan–Jul/26, congelada) > cálculo automático a partir do espelho de
+        // ponto (Ago/26+). Isso é a ÚNICA fonte de verdade — PinProject.tsx,
+        // TimeCard.tsx e Reports.tsx todos leem esse resultado, nenhum deles
+        // reimplementa a fórmula.
+        if (emp.pin_project) {
+          // Começa do saldo de Dez/2025 e soma o delta (saldoMes) de cada mês da
+          // planilha — nunca "reseta" para o valor absoluto do mês. Isso garante
+          // que corrigir um mês qualquer (override) se propaga corretamente pros
+          // meses seguintes, em vez de ser sobrescrito pelo próximo valor estático.
+          let accumulated = hist?.saldoDez ?? 0;
+          let y = 2026, m = 1;
+          while (y < currentYear || (y === currentYear && m <= currentMonth)) {
+            const abbr = PIN_MONTH_ABBR[m] ?? "???";
+            const mk = `${abbr}${y}`;
+            const isCurrentMonth = (y === currentYear && m === currentMonth);
+            const isComplete = !isCurrentMonth;
+            const bonusGoal = PIN_MONTH_GOALS[m] ?? 2400;
+
+            if (mk in seeds) {
+              accumulated = seeds[mk];
+              autoMonths[mk] = { acum: accumulated, extras: 0, goal: bonusGoal, recordCount: 0, isComplete, isCurrentMonth, noSeedMode: false, isManualOverride: true };
+            } else if (mkNum(mk) <= JUL2026_NUM) {
+              const delta = hist?.months[abbr as "JAN"|"FEV"|"MAR"|"ABR"|"MAI"|"JUN"|"JUL"]?.saldoMes ?? null;
+              if (delta !== null) {
+                accumulated += delta;
+                autoMonths[mk] = { acum: accumulated, extras: 0, goal: bonusGoal, recordCount: 0, isComplete, isCurrentMonth, noSeedMode: false };
+              } else {
+                autoMonths[mk] = { acum: null, extras: 0, goal: bonusGoal, recordCount: 0, isComplete, isCurrentMonth, noSeedMode: false };
+              }
+            } else {
+              const prefix = `${y}-${String(m).padStart(2, "0")}`;
+              const monthRecs = recs.filter(r => r.date.startsWith(prefix) && !LEAVE_FOR_PIN.has(r.status));
+              const totalExtras = monthRecs.reduce((s, r) => {
+                let ot = (r.overtime50 || 0) + (r.overtime100 || 0);
+                // Fallback: if stored overtime = 0 but total_work > expected, derive overtime from total_work.
+                if (ot === 0 && r.total_work != null && r.total_work > empExpected) {
+                  ot = r.total_work - empExpected;
+                }
+                return s + ot;
+              }, 0);
+              const bankGoal = 2400; // banco de horas sempre desconta 40h/mês — bonusGoal é só p/ acompanhamento
+              accumulated += totalExtras - bankGoal;
+              autoMonths[mk] = { acum: accumulated, extras: totalExtras, goal: bonusGoal, recordCount: monthRecs.length, isComplete, isCurrentMonth, noSeedMode: false };
+            }
+
+            m++;
+            if (m > 12) { m = 1; y++; }
+          }
+
+          return { id: emp.id, name: emp.name, cpf: emp.cpf, department: emp.departments?.name ?? null, pin_project: true, autoMonths, hasAnySeed: true, noSeedMode: false, startMk: "JAN2026", hasDezSeed: "DEZ2025" in seeds };
+        }
+
+        // ── Não é membro atual do Projeto PIN ────────────────────────────────
+        // Se aparece na planilha histórica (ex-membro ou linha informativa),
+        // mostra só Jan–Jul/26 estático, sem meta/dedução (não tem cota hoje).
+        if (hist) {
+          let accumulated = hist.saldoDez ?? 0;
+          for (const abbr of ["JAN","FEV","MAR","ABR","MAI","JUN","JUL"] as const) {
+            const y = 2026, m = MONTH_ABBR_TO_NUM[abbr];
+            const mk = `${abbr}${y}`;
+            const delta = hist.months[abbr]?.saldoMes ?? null;
+            const hasOverride = mk in seeds;
+            if (hasOverride) accumulated = seeds[mk];
+            else if (delta !== null) accumulated += delta;
+            const hasData = hasOverride || delta !== null;
+            autoMonths[mk] = { acum: hasData ? accumulated : null, extras: 0, goal: PIN_MONTH_GOALS[m] ?? 2400, recordCount: 0, isComplete: true, isCurrentMonth: false, noSeedMode: false, isManualOverride: hasOverride };
+          }
+          return { id: emp.id, name: emp.name, cpf: emp.cpf, department: emp.departments?.name ?? null, pin_project: false, autoMonths, hasAnySeed: Object.keys(seeds).length > 0, noSeedMode: false, startMk: null, hasDezSeed: false };
+        }
+
+        // ── Funcionário fora da planilha PIN — comportamento legado (banco de
+        // horas geral, sem meta mensal), preservado para não afetar quem nunca
+        // teve relação com o Projeto PIN. ─────────────────────────────────────
         const sortedSeedKeys = Object.keys(seeds).sort((a, b) => mkNum(a) - mkNum(b));
         const latestSeedMk = sortedSeedKeys.at(-1) ?? null;
-        const startMk = hasDezSeed ? "DEZ2025" : latestSeedMk;
-
         let startY: number, startM: number, accumulated: number;
         let noSeedMode = false;
 
-        if (startMk) {
-          // Has seed — start from month after the seed
-          const startAbbr = startMk.slice(0, 3);
-          startY = parseInt(startMk.slice(3), 10);
+        if (latestSeedMk) {
+          const startAbbr = latestSeedMk.slice(0, 3);
+          startY = parseInt(latestSeedMk.slice(3), 10);
           startM = (MONTH_ABBR_TO_NUM[startAbbr] ?? 12) + 1;
           if (startM > 12) { startM = 1; startY++; }
-          accumulated = seeds[startMk];
+          accumulated = seeds[latestSeedMk];
         } else if (recs.length > 0) {
-          // No PIN_SEED — use regular bank entries balance as starting point
           noSeedMode = true;
           const firstDate = recs.reduce((a, b) => a.date < b.date ? a : b).date;
           const [fy, fm] = firstDate.substring(0, 7).split("-").map(Number);
           startY = fy; startM = fm;
           accumulated = bankTotalByEmp[emp.id] ?? 0;
         } else {
-          // No seed, no records — nothing to show
-          return { id: emp.id, name: emp.name, cpf: emp.cpf, autoMonths: {}, hasAnySeed: false };
+          return { id: emp.id, name: emp.name, cpf: emp.cpf, department: emp.departments?.name ?? null, pin_project: false, autoMonths: {}, hasAnySeed: false };
         }
 
-        const autoMonths: Record<string, {
-          acum: number | null; extras: number; goal: number;
-          recordCount: number; isComplete: boolean; isCurrentMonth: boolean; noSeedMode: boolean;
-        }> = {};
-
         let y = startY, m = startM;
-
         while (y < currentYear || (y === currentYear && m <= currentMonth)) {
           const prefix = `${y}-${String(m).padStart(2, "0")}`;
           const monthRecs = recs.filter(r => r.date.startsWith(prefix) && !LEAVE_FOR_PIN.has(r.status));
           const totalExtras = monthRecs.reduce((s, r) => {
             let ot = (r.overtime50 || 0) + (r.overtime100 || 0);
-            // Fallback: if stored overtime = 0 but total_work > expected, derive overtime from total_work.
-            // This handles records where time_entries were added after the initial upload
-            // without recomputing attendance_records.overtime50.
             if (ot === 0 && r.total_work != null && r.total_work > empExpected) {
               ot = r.total_work - empExpected;
             }
             return s + ot;
           }, 0);
-          // bonusGoal: monthly target to earn PIN bonus (may be 2880 in Apr/Jun/Jul per Decreto)
-          // bankGoal: always 2400 (40h) — only excess over 40h goes to banco de horas
           const bonusGoal = PIN_MONTH_GOALS[m] ?? 2400;
-          const bankGoal = 2400;
-          const monthDelta = totalExtras - bankGoal;
-          accumulated += monthDelta;
+          accumulated += totalExtras; // sem meta/dedução PIN — não é membro do projeto
 
           const abbr = PIN_MONTH_ABBR[m] ?? "???";
           const mk = `${abbr}${y}`;
           const isCurrentMonth = (y === currentYear && m === currentMonth);
           const isComplete = !isCurrentMonth;
 
-          // Manual seed override for this month takes precedence
           if (mk in seeds) {
             accumulated = seeds[mk];
             autoMonths[mk] = { acum: seeds[mk], extras: totalExtras, goal: bonusGoal, recordCount: monthRecs.length, isComplete, isCurrentMonth, noSeedMode: false };
@@ -1156,60 +1164,17 @@ export async function createApp() {
           id: emp.id,
           name: emp.name,
           cpf: emp.cpf,
+          department: emp.departments?.name ?? null,
+          pin_project: false,
           autoMonths,
-          hasAnySeed: !!startMk,
+          hasAnySeed: !!latestSeedMk,
           noSeedMode,
-          startMk: startMk ?? null,
-          hasDezSeed,
+          startMk: latestSeedMk ?? null,
+          hasDezSeed: "DEZ2025" in seeds,
         };
       });
 
       res.json({ success: true, employees });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // POST import a specific month's accumulated balance for all employees
-  // Body: { monthKey: "JUN2026", entries: [{ employeeId, minutes, nome }] }
-  app.post("/api/pin-project/import-month", async (req, res) => {
-    try {
-      const { monthKey, entries } = req.body as {
-        monthKey: string;
-        entries: Array<{ employeeId: string; minutes: number; nome: string }>;
-      };
-      if (!monthKey || !/^[A-Z]{3}\d{4}$/.test(monthKey)) return res.status(400).json({ error: "monthKey inválido (ex: JUN2026)" });
-      if (!Array.isArray(entries) || entries.length === 0) return res.status(400).json({ error: "Nenhuma entrada fornecida" });
-
-      const seedType = `PIN_SEED_${monthKey}`;
-      // Determine date from month key (last day of the month)
-      const ABBR_TO_M: Record<string, number> = { JAN:1,FEV:2,MAR:3,ABR:4,MAI:5,JUN:6,JUL:7,AGO:8,SET:9,OUT:10,NOV:11,DEZ:12 };
-      const mo = ABBR_TO_M[monthKey.slice(0, 3)] ?? 1;
-      const yr = parseInt(monthKey.slice(3), 10);
-      const lastDay = new Date(yr, mo, 0).getDate();
-      const seedDate = `${yr}-${String(mo).padStart(2,"0")}-${String(lastDay).padStart(2,"0")}`;
-
-      const results: Array<{ employeeId: string; nome: string; ok: boolean; error?: string }> = [];
-      for (const entry of entries) {
-        try {
-          const min = Number(entry.minutes);
-          if (isNaN(min)) { results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: false, error: "Minutos inválidos" }); continue; }
-
-          await supabase.from(BANK_TABLE).delete().eq(BANK_EMP_COL, entry.employeeId).eq("type", seedType);
-          const { error } = await supabase.from(BANK_TABLE).insert([{
-            [BANK_EMP_COL]: entry.employeeId,
-            minutes: min,
-            date: seedDate,
-            type: seedType,
-            description: `Saldo acumulado PIN — Jan a ${monthKey.slice(0,3)}/${monthKey.slice(5)} (planilha)`,
-          }]);
-          results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: !error, error: error?.message });
-        } catch (e: any) {
-          results.push({ employeeId: entry.employeeId, nome: entry.nome, ok: false, error: e.message });
-        }
-      }
-      const ok = results.filter(r => r.ok).length;
-      res.json({ success: true, monthKey, seedDate, imported: ok, total: results.length, results });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -1244,9 +1209,12 @@ export async function createApp() {
   });
 
   // DELETE PIN seed balance for one employee
+  // Remove an override for one employee/month, reverting to the planilha/computed
+  // default. ?monthKey=FEV2026 — defaults to PIN_SEED_TYPE's month for compat.
   app.delete("/api/pin-project/balance/:employeeId", async (req, res) => {
     try {
-      await supabase.from(BANK_TABLE).delete().eq(BANK_EMP_COL, req.params.employeeId).eq("type", PIN_SEED_TYPE);
+      const monthKey = String(req.query.monthKey || PIN_SEED_TYPE.replace("PIN_SEED_", "")).toUpperCase();
+      await supabase.from(BANK_TABLE).delete().eq(BANK_EMP_COL, req.params.employeeId).eq("type", `PIN_SEED_${monthKey}`);
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -1501,6 +1469,41 @@ export async function createApp() {
       res.json({ success: true, results });
     } catch (e: any) {
       console.error("❌ Save:", e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET recent import batches — inferred from attendance_records.updated_at, since
+  // uploads aren't logged in a separate table. Records saved by the same PDF import
+  // land within seconds of each other, so grouping by the minute reconstructs batches
+  // without needing schema changes.
+  app.get("/api/upload/ponto/history", async (_req, res) => {
+    try {
+      const { data, error } = await supabase
+        .from("attendance_records")
+        .select("employee_id, updated_at")
+        .order("updated_at", { ascending: false })
+        .limit(3000);
+      if (error) throw new Error(error.message);
+
+      const buckets = new Map<string, { minuteKey: string; employeeIds: Set<string>; recordCount: number; latest: string }>();
+      for (const r of data || []) {
+        if (!r.updated_at) continue;
+        const minuteKey = r.updated_at.slice(0, 16); // "YYYY-MM-DDTHH:mm"
+        let b = buckets.get(minuteKey);
+        if (!b) { b = { minuteKey, employeeIds: new Set(), recordCount: 0, latest: r.updated_at }; buckets.set(minuteKey, b); }
+        b.employeeIds.add(r.employee_id);
+        b.recordCount++;
+        if (r.updated_at > b.latest) b.latest = r.updated_at;
+      }
+
+      const history = Array.from(buckets.values())
+        .sort((a, b) => b.latest.localeCompare(a.latest))
+        .slice(0, 5)
+        .map(b => ({ updatedAt: b.latest, employeeCount: b.employeeIds.size, recordCount: b.recordCount }));
+
+      res.json({ success: true, history });
+    } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });

@@ -72,6 +72,13 @@ async function deleteAll(table: string, label: string): Promise<number> {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
+  const projectRef = new URL(supabaseUrl!).hostname.split(".")[0];
+  if (process.env.CONFIRM_WIPE_PROJECT_REF !== projectRef) {
+    console.error(`\n🛑 BLOQUEADO: este script apaga TODOS os registros de ponto e batidas do banco "${projectRef}" (funcionários e banco de horas são mantidos, mas o espelho de ponto inteiro é perdido).`);
+    console.error(`Se é isso mesmo que você quer, rode de novo com:\n  CONFIRM_WIPE_PROJECT_REF=${projectRef} npx tsx reset-apontamentos.ts\n`);
+    process.exit(1);
+  }
+
   console.log("\n══════════════════════════════════════════════════════════════");
   console.log("   CHRONOS PONTO — Reset de Apontamentos");
   console.log("══════════════════════════════════════════════════════════════\n");

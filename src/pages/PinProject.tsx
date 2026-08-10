@@ -1,8 +1,11 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    Saldos Acumulados — Projeto PIN 2026
    Controla as horas extras dedicadas ao Projeto PIN por cada funcionário.
-   Meta mensal: 40h (Jan/Fev/Mar/Mai) ou 48h (Abr/Jun/Jul — meses com
-   compensação de feriado conforme Decreto nº 70.273/2025).
+   Fonte única de verdade: /api/pin-project/auto-balances (servidor), que
+   resolve cada mês nessa ordem: override manual do admin > planilha oficial
+   congelada (Jan–Jul/26) > cálculo automático do espelho de ponto (Ago/26+).
+   Qualquer mês pode ser corrigido manualmente aqui — é o único lugar do
+   sistema que edita banco de horas do Projeto PIN.
    Saldo POSITIVO = funcionário cumpriu e superou a meta → verde
    Saldo NEGATIVO = funcionário está devendo horas ao projeto → vermelho
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -10,10 +13,10 @@
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  Target, TrendingUp, TrendingDown, AlertTriangle, CheckCircle2,
-  Upload, Download, Edit2, Save, X, RefreshCw, Search,
-  ChevronDown, ChevronUp, Info, Users, Clock, FileSpreadsheet,
-  BadgeCheck, AlertCircle, Filter, Building2, BarChart3,
+  Target, TrendingUp, AlertTriangle, CheckCircle2,
+  Pencil, Save, X, RotateCcw, RefreshCw, Search,
+  ChevronDown, ChevronUp, Info, Users, Clock,
+  AlertCircle, ChevronRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -40,441 +43,135 @@ const parseHHMM = (s: string): number | null => {
   return sign * (parseInt(m[2], 10) * 60 + (m[3] ? parseInt(m[3], 10) : 0));
 };
 
-/* ── Metas mensais do Projeto PIN (Decreto nº 70.273/2025) ────────────────── */
-const PIN_GOALS: Record<string, number> = {
-  jan: 2400, fev: 2400, mar: 2400, abr: 2880, mai: 2400,
-  jun: 2880, jul: 2880, ago: 2400, set: 2400, out: 2400, nov: 2400, dez: 2400,
-};
-const MONTH_LABELS: Record<string, string> = {
-  jan: "Jan/26", fev: "Fev/26", mar: "Mar/26",
-  abr: "Abr/26", mai: "Mai/26",
-};
-
-/* ── Dados extraídos da planilha "PIN - HORAS AREAS 2026.xlsx" ─────────────
-   Colunas: cpf, nome, area, saldoDezMin (dez/2025), acum por mês,
-   maiSAcumMin = saldo acumulado até Mai/2026, isNegative (em vermelho na planilha)
-   ─────────────────────────────────────────────────────────────────────────── */
-type ExcelEntry = {
-  cpf: string;
-  nome: string;
-  area: string;
-  saldoDezMin: number | null;
-  janAcumMin: number | null;
-  fevAcumMin: number | null;
-  marAcumMin: number | null;
-  abrAcumMin: number | null;
-  maiAcumMin: number | null; // = saldo final Mai/2026
-  isNegative: boolean;       // célula em VERMELHO na planilha
-};
-
-const EXCEL_DATA: ExcelEntry[] = [
-  // ── GABINETE / ASSESSORIA ────────────────────────────────────────────────
-  { cpf:"225.860.348-05", nome:"ADAN FREIRE PEREIRA",               area:"GABINETE",   saldoDezMin:867,   janAcumMin:1416, fevAcumMin:1524, marAcumMin:2209, abrAcumMin:1927, maiAcumMin:2358,  isNegative:false },
-  { cpf:"190.680.298-00", nome:"ADRIANA CRISTINA DE JESUS AZEVEDO", area:"ASSESSORIA", saldoDezMin:427,   janAcumMin:482,  fevAcumMin:527,  marAcumMin:1107, abrAcumMin:942,  maiAcumMin:1141,  isNegative:false },
-  { cpf:"229.219.648-48", nome:"ANA PAULA DA SILVA",                area:"GABINETE",   saldoDezMin:277,   janAcumMin:414,  fevAcumMin:446,  marAcumMin:931,  abrAcumMin:-527, maiAcumMin:-159,  isNegative:true  },
-  { cpf:"125.496.378-28", nome:"ELIANA FRANCO PEREIRA",             area:"ASSESSORIA", saldoDezMin:123,   janAcumMin:-829, fevAcumMin:-749, marAcumMin:-112, abrAcumMin:-1015, maiAcumMin:-283, isNegative:true  },
-  { cpf:"327.236.438-24", nome:"GABRIELA FERNANDA VERGUEIRO",       area:"ASSESSORIA", saldoDezMin:1438,  janAcumMin:1163, fevAcumMin:1249, marAcumMin:1829, abrAcumMin:1269, maiAcumMin:1440,  isNegative:false },
-  { cpf:"287.620.078-31", nome:"SUSANA SERAFIM CIRINO",             area:"ASSESSORIA", saldoDezMin:934,   janAcumMin:1100, fevAcumMin:1744, marAcumMin:2391, abrAcumMin:2157, maiAcumMin:1517,  isNegative:false },
-  { cpf:"286.235.138-51", nome:"TATIANA DE CARVALHO COSTA LOSCHER", area:"GABINETE",   saldoDezMin:null,  janAcumMin:null, fevAcumMin:null, marAcumMin:152,  abrAcumMin:null, maiAcumMin:null,  isNegative:false },
-
-  // ── CATC ─────────────────────────────────────────────────────────────────
-  { cpf:"317.425.088-98", nome:"BEATRIZ PUGA RODRIGUES",            area:"CATC",       saldoDezMin:165,   janAcumMin:134,  fevAcumMin:170,  marAcumMin:-85,  abrAcumMin:-409, maiAcumMin:-404,  isNegative:true  },
-  { cpf:"303.099.138-53", nome:"DIONE MARIA LISBOA PEREIRA",        area:"CATC",       saldoDezMin:1972,  janAcumMin:1746, fevAcumMin:1431, marAcumMin:1531, abrAcumMin:23,   maiAcumMin:-219,  isNegative:true  },
-  { cpf:"247.823.728-84", nome:"FÁBIO LUÍS POZZO",                  area:"CATC",       saldoDezMin:11169, janAcumMin:10001,fevAcumMin:10376,marAcumMin:11281,abrAcumMin:10261,maiAcumMin:11073, isNegative:false },
-  { cpf:"",               nome:"GABRIELA PICCARDI GONZALES",         area:"CATC",       saldoDezMin:900,   janAcumMin:882,  fevAcumMin:801,  marAcumMin:777,  abrAcumMin:300,  maiAcumMin:132,   isNegative:false },
-  { cpf:"012.953.668-78", nome:"ROSELI APARECIDA RODRIGUES COLOMBO",area:"CATC",       saldoDezMin:619,   janAcumMin:1153, fevAcumMin:1177, marAcumMin:1381, abrAcumMin:1758, maiAcumMin:3046,  isNegative:false },
-
-  // ── GCSS (dados até Abr/26 — Mai/26 não preenchido na planilha) ──────────
-  { cpf:"161.372.618-08", nome:"ALMIR MANTA",                        area:"GCSS",       saldoDezMin:null,  janAcumMin:1008, fevAcumMin:1574, marAcumMin:1769, abrAcumMin:1921, maiAcumMin:null,  isNegative:false },
-  { cpf:"122.523.178-76", nome:"CARLA ROSARIA RODRIGUES VAZ TURIANI",area:"GCSS",       saldoDezMin:null,  janAcumMin:null, fevAcumMin:396,  marAcumMin:848,  abrAcumMin:510,  maiAcumMin:null,  isNegative:false },
-  { cpf:"045.369.178-10", nome:"MAGDA DE CAMPOS",                    area:"GCSS",       saldoDezMin:null,  janAcumMin:1921, fevAcumMin:3100, marAcumMin:4495, abrAcumMin:2916, maiAcumMin:null,  isNegative:false },
-  { cpf:"992.148.308-00", nome:"MARILDA APARECIDA DA SILVA VELOSO",  area:"GCSS",       saldoDezMin:null,  janAcumMin:1315, fevAcumMin:2149, marAcumMin:2877, abrAcumMin:1811, maiAcumMin:null,  isNegative:false },
-  { cpf:"001.545.238-79", nome:"MARTA DE ALMEIDA GOMES GUNTHER",     area:"GCSS",       saldoDezMin:null,  janAcumMin:106,  fevAcumMin:299,  marAcumMin:485,  abrAcumMin:5,    maiAcumMin:null,  isNegative:false },
-  { cpf:"170.792.878-98", nome:"MARCELO DA SILVA GASPAR",            area:"GCSS",       saldoDezMin:561,   janAcumMin:1394, fevAcumMin:1850, marAcumMin:2509, abrAcumMin:2000, maiAcumMin:null,  isNegative:false },
-  { cpf:"010.679.358-60", nome:"NORMA SUELY FERREIRA SOUZA AMERICO", area:"GCSS",       saldoDezMin:43780, janAcumMin:46050,fevAcumMin:47756,marAcumMin:50099,abrAcumMin:51683,maiAcumMin:null,  isNegative:false },
-  { cpf:"148.987.578-63", nome:"SILVIA MARIA ROCHA",                 area:"GCSS",       saldoDezMin:1704,  janAcumMin:1806, fevAcumMin:1681, marAcumMin:1510, abrAcumMin:1040, maiAcumMin:null,  isNegative:false },
-
-  // ── GCO ──────────────────────────────────────────────────────────────────
-  { cpf:"305.526.208-58", nome:"BRUNO MARCELO LOPES SANTOS",         area:"GCO",        saldoDezMin:null,  janAcumMin:null, fevAcumMin:null, marAcumMin:null, abrAcumMin:758,  maiAcumMin:2418,  isNegative:false },
-  { cpf:"257.166.288-00", nome:"CLEMILSON SANTOS COBRA",             area:"GCO",        saldoDezMin:null,  janAcumMin:1252, fevAcumMin:2570, marAcumMin:3286, abrAcumMin:4782, maiAcumMin:5743,  isNegative:false },
-  { cpf:"",               nome:"DARIO BESSELER",                      area:"GCO",        saldoDezMin:null,  janAcumMin:507,  fevAcumMin:688,  marAcumMin:1181, abrAcumMin:1401, maiAcumMin:2098,  isNegative:false },
-  { cpf:"",               nome:"EUNICE BRASILEIRO",                   area:"GCO",        saldoDezMin:null,  janAcumMin:871,  fevAcumMin:871,  marAcumMin:871,  abrAcumMin:391,  maiAcumMin:null,  isNegative:false },
-  { cpf:"148.944.468-80", nome:"EDNA MIYUKI BABA",                   area:"GCO",        saldoDezMin:34891, janAcumMin:36147,fevAcumMin:36762,marAcumMin:37839,abrAcumMin:38639,maiAcumMin:39441, isNegative:false },
-  { cpf:"257.779.938-18", nome:"WANDER HELENO SALLES",               area:"GCO",        saldoDezMin:3601,  janAcumMin:2709, fevAcumMin:2778, marAcumMin:2181, abrAcumMin:1643, maiAcumMin:3220,  isNegative:false },
-
-  // ── GGCON ────────────────────────────────────────────────────────────────
-  { cpf:"287.989.128-01", nome:"ARLETE SHIRLEY PEREIRA DE CARVALHO", area:"GGCON",      saldoDezMin:1869,  janAcumMin:1728, fevAcumMin:2366, marAcumMin:2134, abrAcumMin:1884, maiAcumMin:2097,  isNegative:false },
-  { cpf:"126.609.768-64", nome:"ELENICE ORPHEU ALVES DE SOUZA",      area:"GGCON",      saldoDezMin:868,   janAcumMin:1852, fevAcumMin:1919, marAcumMin:2303, abrAcumMin:1689, maiAcumMin:-606,  isNegative:true  },
-  { cpf:"",               nome:"ELZA TATSUO SAMECIMA",                area:"GGCON",      saldoDezMin:3084,  janAcumMin:5241, fevAcumMin:6994, marAcumMin:9346, abrAcumMin:10198,maiAcumMin:12096, isNegative:false },
-  { cpf:"312.848.578-08", nome:"FERNANDA DA SILVA E SOUZA",          area:"GGCON",      saldoDezMin:381,   janAcumMin:186,  fevAcumMin:-1263,marAcumMin:-1928,abrAcumMin:-792, maiAcumMin:779,   isNegative:false },
-  { cpf:"765.959.358-72", nome:"GILMAR MARCIANO DOS SANTOS",         area:"GGCON",      saldoDezMin:1273,  janAcumMin:1816, fevAcumMin:1975, marAcumMin:2428, abrAcumMin:1221, maiAcumMin:1398,  isNegative:false },
-  { cpf:"035.275.838-40", nome:"JOÃO CARLOS FERREIRA DE SOUZA",      area:"GGCON",      saldoDezMin:587,   janAcumMin:97,   fevAcumMin:-384, marAcumMin:-273, abrAcumMin:-1381,maiAcumMin:-980,  isNegative:true  },
-  { cpf:"386.631.688-70", nome:"JOMARA SIMÕES DOS SANTOS",           area:"GGCON",      saldoDezMin:1040,  janAcumMin:122,  fevAcumMin:1001, marAcumMin:1036, abrAcumMin:441,  maiAcumMin:1027,  isNegative:false },
-  { cpf:"342.131.178-12", nome:"KAREN DE OLIVEIRA DELFINO",          area:"GGCON",      saldoDezMin:1623,  janAcumMin:1188, fevAcumMin:1126, marAcumMin:1136, abrAcumMin:1400, maiAcumMin:-407,  isNegative:true  },
-  { cpf:"",               nome:"LUIZ ANDRADE",                        area:"GGCON",      saldoDezMin:null,  janAcumMin:null, fevAcumMin:null, marAcumMin:null, abrAcumMin:null, maiAcumMin:292,   isNegative:false },
-  { cpf:"016.445.498-59", nome:"MARILSA DA SILVA E SILVA",           area:"GGCON",      saldoDezMin:null,  janAcumMin:71,   fevAcumMin:-73,  marAcumMin:-43,  abrAcumMin:497,  maiAcumMin:490,   isNegative:false },
-  { cpf:"107.506.848-79", nome:"MARISTELA APARECIDA RAPHAEL",        area:"GGCON",      saldoDezMin:807,   janAcumMin:-107, fevAcumMin:1495, marAcumMin:295,  abrAcumMin:811,  maiAcumMin:2424,  isNegative:false },
-  { cpf:"119.658.078-28", nome:"MARTA CONCEIÇÃO DE MOURA",           area:"GGCON",      saldoDezMin:344,   janAcumMin:183,  fevAcumMin:-1313,marAcumMin:4524, abrAcumMin:4108, maiAcumMin:5773,  isNegative:false },
-  { cpf:"283.638.378-06", nome:"RENATO ESPIRITO SANTO DIAS TATIT",   area:"GGCON",      saldoDezMin:6752,  janAcumMin:73,   fevAcumMin:90,   marAcumMin:650,  abrAcumMin:668,  maiAcumMin:1018,  isNegative:false },
-  { cpf:"043.072.288-55", nome:"ROBERTO CARLOS SANTANA",             area:"GGCON",      saldoDezMin:631,   janAcumMin:278,  fevAcumMin:851,  marAcumMin:1701, abrAcumMin:1149, maiAcumMin:922,   isNegative:false },
-  { cpf:"021.430.158-36", nome:"RONALDO HILÁRIO DOS SANTOS",         area:"GGCON",      saldoDezMin:537,   janAcumMin:598,  fevAcumMin:598,  marAcumMin:886,  abrAcumMin:1027, maiAcumMin:1208,  isNegative:false },
-  { cpf:"094.778.158-70", nome:"TANIA CRISTINA BEGOSSO",             area:"GGCON",      saldoDezMin:514,   janAcumMin:518,  fevAcumMin:920,  marAcumMin:6209, abrAcumMin:4676, maiAcumMin:4624,  isNegative:false },
-  { cpf:"",               nome:"THIAGO ALMEIDA DA SILVA",            area:"GGCON",      saldoDezMin:925,   janAcumMin:935,  fevAcumMin:942,  marAcumMin:571,  abrAcumMin:-539, maiAcumMin:-712,  isNegative:true  },
-
-  // ── GCF ──────────────────────────────────────────────────────────────────
-  { cpf:"132.925.068-08", nome:"ALEXSANDRA BERTACO SEVERINO",        area:"GCF",        saldoDezMin:null,  janAcumMin:531,  fevAcumMin:973,  marAcumMin:1093, abrAcumMin:1150, maiAcumMin:1168,  isNegative:false },
-  { cpf:"075.267.358-01", nome:"CESAR MOREIRA CONSTANTINO",          area:"GCF",        saldoDezMin:6332,  janAcumMin:6197, fevAcumMin:5296, marAcumMin:3682, abrAcumMin:2678, maiAcumMin:2973,  isNegative:false },
-  { cpf:"290.989.248-40", nome:"CLAUDENICE DA SILVA",                area:"GCF",        saldoDezMin:377,   janAcumMin:171,  fevAcumMin:-68,  marAcumMin:-2,   abrAcumMin:345,  maiAcumMin:4,     isNegative:false },
-  { cpf:"113.118.838-19", nome:"CONCEIÇÃO AP. PANISSI MARTINS",      area:"GCF",        saldoDezMin:null,  janAcumMin:1799, fevAcumMin:3117, marAcumMin:5032, abrAcumMin:5563, maiAcumMin:7044,  isNegative:false },
-  { cpf:"350.308.248-47", nome:"CLEBER FARIAS DOS SANTOS",           area:"GCF",        saldoDezMin:6445,  janAcumMin:6640, fevAcumMin:5270, marAcumMin:5839, abrAcumMin:5957, maiAcumMin:6790,  isNegative:false },
-  { cpf:"333.343.528-46", nome:"DIEGO BARBOSA DOS SANTOS",           area:"GCF",        saldoDezMin:580,   janAcumMin:1390, fevAcumMin:1773, marAcumMin:2058, abrAcumMin:2150, maiAcumMin:2563,  isNegative:false },
-  { cpf:"",               nome:"FERNANDO CESAR BARBOZA",             area:"GCF",        saldoDezMin:null,  janAcumMin:1556, fevAcumMin:1194, marAcumMin:2169, abrAcumMin:2581, maiAcumMin:3321,  isNegative:false },
-  { cpf:"321.856.588-08", nome:"JOSÉ LUIZ DOS SANTOS MOREIRA",       area:"GCF",        saldoDezMin:345,   janAcumMin:251,  fevAcumMin:-1142,marAcumMin:-1446,abrAcumMin:-982, maiAcumMin:-43,   isNegative:true  },
-  { cpf:"346.985.798-99", nome:"JOSE ROMÃO BATISTA",                 area:"GCF",        saldoDezMin:268,   janAcumMin:829,  fevAcumMin:1027, marAcumMin:1482, abrAcumMin:1495, maiAcumMin:1028,  isNegative:false },
-  { cpf:"032.442.248-22", nome:"LUIZ CARLOS BAZALIA DOS SANTOS",     area:"GCF",        saldoDezMin:1811,  janAcumMin:5277, fevAcumMin:5391, marAcumMin:5810, abrAcumMin:5346, maiAcumMin:6837,  isNegative:false },
-  { cpf:"439.597.228-42", nome:"MATEUS RIBEIRO DA SILVA",            area:"GCF",        saldoDezMin:4635,  janAcumMin:5089, fevAcumMin:4434, marAcumMin:4569, abrAcumMin:3888, maiAcumMin:3733,  isNegative:false },
-  { cpf:"",               nome:"THAIS CRISTINA NASCIMENTO BARBOSA",  area:"GCF",        saldoDezMin:null,  janAcumMin:null, fevAcumMin:45,   marAcumMin:1227, abrAcumMin:1471, maiAcumMin:2334,  isNegative:false },
-];
-
 /* ── Month key helpers ───────────────────────────────────────────────────── */
-const MONTH_KEY_ABBR: Record<string, number> = {
+const MONTH_ABBR_NUM: Record<string, number> = {
   JAN:1, FEV:2, MAR:3, ABR:4, MAI:5, JUN:6, JUL:7, AGO:8, SET:9, OUT:10, NOV:11, DEZ:12,
 };
-const MONTH_KEY_LABEL: Record<string, string> = {
-  JAN2026:"Jan/26", FEV2026:"Fev/26", MAR2026:"Mar/26", ABR2026:"Abr/26", MAI2026:"Mai/26",
-  JUN2026:"Jun/26", JUL2026:"Jul/26", AGO2026:"Ago/26", SET2026:"Set/26", OUT2026:"Out/26",
-  NOV2026:"Nov/26", DEZ2026:"Dez/26",
-  JAN2027:"Jan/27", FEV2027:"Fev/27", MAR2027:"Mar/27", ABR2027:"Abr/27",
+const MONTH_ABBR_LABEL: Record<string, string> = {
+  JAN:"Jan", FEV:"Fev", MAR:"Mar", ABR:"Abr", MAI:"Mai", JUN:"Jun",
+  JUL:"Jul", AGO:"Ago", SET:"Set", OUT:"Out", NOV:"Nov", DEZ:"Dez",
 };
 function monthKeyToNum(k: string): number {
-  return parseInt(k.slice(3), 10) * 100 + (MONTH_KEY_ABBR[k.slice(0, 3)] ?? 0);
+  return parseInt(k.slice(3), 10) * 100 + (MONTH_ABBR_NUM[k.slice(0, 3)] ?? 0);
 }
-// Static months already shown in EXCEL_DATA columns — new DB months will be AFTER "MAI2026"
-const STATIC_MONTH_NUM = monthKeyToNum("MAI2026");
+function monthKeyLabel(k: string): string {
+  return `${MONTH_ABBR_LABEL[k.slice(0, 3)] ?? k.slice(0, 3)}/${k.slice(5)}`;
+}
 
-/* ── Types ────────────────────────────────────────────────────────────────── */
-type DbEmployee = {
-  id: string;
-  name: string;
-  cpf: string | null;
-  registration: string | null;
-  department: string | null;
-  pinSeedMinutes: number | null;   // MAI2026 backward-compat
-  pinSeeds: Record<string, number>; // all imported months { "MAI2026": x, "JUN2026": y, ... }
-};
-
-type MatchedEntry = ExcelEntry & {
-  dbEmployee: DbEmployee | null;
-  matched: boolean;
-};
-
-type AutoMonthData = {
+/* ── Types (formato de /api/pin-project/auto-balances) ───────────────────── */
+type PinMonth = {
   acum: number | null;
-  extras: number;
   goal: number;
-  recordCount: number;
-  isComplete: boolean;
   isCurrentMonth: boolean;
   isManualOverride?: boolean;
-  noSeedMode?: boolean;
 };
-
-type EditState = { minutes: string; open: boolean };
+type PinEmployeeRow = {
+  id: string;
+  name: string;
+  department: string | null;
+  pin_project: boolean;
+  months: Record<string, PinMonth>;
+};
 
 /* ── Component ────────────────────────────────────────────────────────────── */
 export default function PinProject() {
-  const [dbEmps, setDbEmps]         = useState<DbEmployee[]>([]);
-  const [dbMonthKeys, setDbMonthKeys] = useState<string[]>([]); // extra months from DB (beyond MAI2026)
-  // auto-calculated balances from attendance records: empId → monthKey → data
-  const [autoBalances, setAutoBalances] = useState<Record<string, Record<string, AutoMonthData>>>({});
-  const [autoMonthKeys, setAutoMonthKeys] = useState<string[]>([]); // months present in auto-calc data
-  const [loading, setLoading]       = useState(true);
-  const [importing, setImporting]   = useState(false);
-  // "Importar mês" modal
-  const [showImportMonth, setShowImportMonth] = useState(false);
-  const [importMonthKey, setImportMonthKey]   = useState("JUN2026");
-  const [importMonthData, setImportMonthData] = useState<Record<string, string>>({}); // empId → hh:mm string
-  const [importingMonth, setImportingMonth]   = useState(false);
-
-  // Manual employee links for entries that fail auto-match (cpf|nome → employeeId), persisted locally
-  const [manualLinks, setManualLinks] = useState<Record<string, string>>(() => {
-    try {
-      const raw = localStorage.getItem("pin_manual_links");
-      return raw ? JSON.parse(raw) : {};
-    } catch { return {}; }
-  });
-  const [linkPickerKey, setLinkPickerKey] = useState<string | null>(null); // which row's link-picker is open
-  const [linkPickerSearch, setLinkPickerSearch] = useState("");
-
-  const setManualLink = (linkKey: string, employeeId: string) => {
-    setManualLinks(prev => {
-      const next = { ...prev, [linkKey]: employeeId };
-      try { localStorage.setItem("pin_manual_links", JSON.stringify(next)); } catch {}
-      return next;
-    });
-    setLinkPickerKey(null);
-    setLinkPickerSearch("");
-  };
+  const [rows, setRows]       = useState<PinEmployeeRow[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const [search, setSearch]         = useState("");
   const [filterArea, setFilterArea] = useState("all");
   const [filterStatus, setFilterStatus] = useState<"all" | "ok" | "deficit" | "sem_dados">("all");
   const [sortKey, setSortKey]       = useState<"nome" | "area" | "saldo">("area");
   const [sortDir, setSortDir]       = useState<"asc" | "desc">("asc");
-  const [editStates, setEditStates] = useState<Record<string, EditState>>({});
-  const [savingId, setSavingId]     = useState<string | null>(null);
   const [showInfo, setShowInfo]     = useState(false);
 
-  /* load DB employees + auto-calculated balances from attendance records */
-  const loadDbEmployees = useCallback(async () => {
+  // Modal de detalhe/edição por funcionário — único lugar do sistema onde o
+  // banco de horas do Projeto PIN é corrigido, mês a mês.
+  const [selectedEmpId, setSelectedEmpId] = useState<string | null>(null);
+  const [editingMk, setEditingMk]         = useState<string | null>(null);
+  const [editValue, setEditValue]         = useState("");
+  const [savingMk, setSavingMk]           = useState<string | null>(null);
+
+  const load = useCallback(async () => {
     setLoading(true);
-    // Core employee list + manual/imported balances — this MUST succeed for the page to work
     try {
-      const r = await fetch("/api/pin-project/balances");
+      const r = await fetch("/api/pin-project/auto-balances");
       const j = await r.json();
-      if (j.success) {
-        setDbEmps(j.employees);
-        const extraKeys: string[] = (j.monthKeys ?? []).filter(
-          (k: string) => monthKeyToNum(k) > STATIC_MONTH_NUM
-        );
-        setDbMonthKeys(extraKeys);
-      } else {
-        toast.error(j.error ?? "Erro ao carregar funcionários do Projeto PIN");
+      if (!j.success || !Array.isArray(j.employees)) {
+        toast.error(j.error ?? "Erro ao carregar saldos acumulados PIN");
+        return;
       }
+      const list: PinEmployeeRow[] = j.employees
+        .filter((e: any) => e.autoMonths && Object.keys(e.autoMonths).length > 0)
+        .map((e: any) => ({
+          id: e.id,
+          name: e.name,
+          department: e.department ?? null,
+          pin_project: !!e.pin_project,
+          months: e.autoMonths as Record<string, PinMonth>,
+        }));
+      setRows(list);
     } catch {
       toast.error("Erro ao carregar saldos acumulados PIN");
     } finally {
       setLoading(false);
     }
-
-    // Auto-calculated balances (espelho de ponto) — secondary enhancement.
-    // A failure here must NEVER block the core list/matching/editing above.
-    try {
-      const ar = await fetch("/api/pin-project/auto-balances");
-      const ja = await ar.json();
-      if (ja.success && Array.isArray(ja.employees)) {
-        const map: Record<string, Record<string, AutoMonthData>> = {};
-        const mkSet = new Set<string>();
-        for (const emp of ja.employees as any[]) {
-          // Include ALL employees — even without seed (noSeedMode shows monthly performance)
-          const months = emp.autoMonths as Record<string, any>;
-          if (!months || Object.keys(months).length === 0) continue;
-          map[emp.id] = {};
-          for (const [mk, v] of Object.entries(months)) {
-            map[emp.id][mk] = v as AutoMonthData;
-            if (monthKeyToNum(mk) > STATIC_MONTH_NUM) mkSet.add(mk);
-          }
-        }
-
-        setAutoBalances(map);
-        const merged = Array.from(mkSet).sort((a, b) => monthKeyToNum(a) - monthKeyToNum(b));
-        setAutoMonthKeys(merged);
-      } else if (!ja.success && ja.error) {
-        console.error("[auto-balances]", ja.error);
-      }
-    } catch (err) {
-      console.error("[auto-balances fetch]", err);
-    }
   }, []);
 
-  useEffect(() => { loadDbEmployees(); }, [loadDbEmployees]);
+  useEffect(() => { load(); }, [load]);
 
-  /* Match Excel entries to DB employees */
-  const matched: MatchedEntry[] = useMemo(() => {
-    const normCpf  = (s: string) => s.replace(/\D/g, "");
-    const stripAccents = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "");
-    const normName = (s: string) => stripAccents(s).toLowerCase().replace(/\s+/g, " ").trim();
-    return EXCEL_DATA.map(ex => {
-      let dbEmp: DbEmployee | null = null;
-      if (ex.cpf) {
-        dbEmp = dbEmps.find(d => d.cpf && normCpf(d.cpf) === normCpf(ex.cpf)) ?? null;
-      }
-      if (!dbEmp) {
-        dbEmp = dbEmps.find(d => normName(d.name) === normName(ex.nome)) ?? null;
-      }
-      // Fallback: manual link set by admin (saved to localStorage)
-      const linkKey = ex.cpf + "|" + ex.nome;
-      if (!dbEmp && manualLinks[linkKey]) {
-        dbEmp = dbEmps.find(d => d.id === manualLinks[linkKey]) ?? null;
-      }
-      // Ensure pinSeeds always exists
-      if (dbEmp && !dbEmp.pinSeeds) dbEmp = { ...dbEmp, pinSeeds: {} };
-      return { ...ex, dbEmployee: dbEmp, matched: !!dbEmp };
-    });
-  }, [dbEmps, manualLinks]);
-
-  /* Merged month keys: union of DB imported months + auto-calc months (after MAI2026) */
-  const allDynamicMonthKeys = useMemo(() => {
-    const s = new Set([...dbMonthKeys, ...autoMonthKeys]);
+  /* Todas as colunas de mês em uso, em ordem cronológica */
+  const monthKeys = useMemo(() => {
+    const s = new Set<string>();
+    for (const row of rows) for (const mk of Object.keys(row.months)) s.add(mk);
     return Array.from(s).sort((a, b) => monthKeyToNum(a) - monthKeyToNum(b));
-  }, [dbMonthKeys, autoMonthKeys]);
+  }, [rows]);
 
-  /* Areas for filter */
-  const areas = useMemo(() => ["all", ...Array.from(new Set(EXCEL_DATA.map(e => e.area))).sort()], []);
+  /* Mês mais recente com dado para cada funcionário = "Saldo Atual" */
+  const latestMonthOf = useCallback((row: PinEmployeeRow) => {
+    const keys = Object.keys(row.months).sort((a, b) => monthKeyToNum(b) - monthKeyToNum(a));
+    return keys[0] ? { mk: keys[0], data: row.months[keys[0]] } : null;
+  }, []);
 
-  /* Apply filters + sort */
+  const areas = useMemo(
+    () => ["all", ...Array.from(new Set(rows.map(r => r.department ?? "Sem departamento"))).sort()],
+    [rows]
+  );
+
   const visible = useMemo(() => {
-    let list = matched;
-    if (search) list = list.filter(e => e.nome.toLowerCase().includes(search.toLowerCase()));
-    if (filterArea !== "all") list = list.filter(e => e.area === filterArea);
-    if (filterStatus === "ok")       list = list.filter(e => e.maiAcumMin !== null && e.maiAcumMin >= 0);
-    if (filterStatus === "deficit")  list = list.filter(e => e.maiAcumMin !== null && e.maiAcumMin < 0);
-    if (filterStatus === "sem_dados") list = list.filter(e => e.maiAcumMin === null);
-
-    list = [...list].sort((a, b) => {
+    let list = rows;
+    if (search) list = list.filter(r => r.name.toLowerCase().includes(search.toLowerCase()));
+    if (filterArea !== "all") list = list.filter(r => (r.department ?? "Sem departamento") === filterArea);
+    if (filterStatus !== "all") {
+      list = list.filter(r => {
+        const latest = latestMonthOf(r);
+        const acum = latest?.data.acum ?? null;
+        if (filterStatus === "sem_dados") return acum === null;
+        if (filterStatus === "ok") return acum !== null && acum >= 0;
+        return acum !== null && acum < 0; // deficit
+      });
+    }
+    return [...list].sort((a, b) => {
       let v: number;
-      if (sortKey === "nome")  v = a.nome.localeCompare(b.nome, "pt-BR");
-      else if (sortKey === "area") v = a.area.localeCompare(b.area, "pt-BR") || a.nome.localeCompare(b.nome, "pt-BR");
-      else {
-        const av = a.maiAcumMin ?? Infinity;
-        const bv = b.maiAcumMin ?? Infinity;
+      if (sortKey === "nome") v = a.name.localeCompare(b.name, "pt-BR");
+      else if (sortKey === "area") {
+        v = (a.department ?? "").localeCompare(b.department ?? "", "pt-BR") || a.name.localeCompare(b.name, "pt-BR");
+      } else {
+        const av = latestMonthOf(a)?.data.acum ?? Infinity;
+        const bv = latestMonthOf(b)?.data.acum ?? Infinity;
         v = av - bv;
       }
       return sortDir === "asc" ? v : -v;
     });
-    return list;
-  }, [matched, search, filterArea, filterStatus, sortKey, sortDir]);
+  }, [rows, search, filterArea, filterStatus, sortKey, sortDir, latestMonthOf]);
 
-  /* Summary stats */
   const stats = useMemo(() => {
-    const withData = matched.filter(e => e.maiAcumMin !== null);
-    const deficits = withData.filter(e => (e.maiAcumMin ?? 0) < 0);
-    const ok       = withData.filter(e => (e.maiAcumMin ?? 0) >= 0);
-    const totalDef = deficits.reduce((s, e) => s + (e.maiAcumMin ?? 0), 0);
-    const totalSur = ok.reduce((s, e) => s + (e.maiAcumMin ?? 0), 0);
-    const imported = matched.filter(e => e.dbEmployee && e.dbEmployee.pinSeedMinutes !== null).length;
-    return { total: matched.length, deficits: deficits.length, ok: ok.length, noData: matched.length - withData.length, totalDef, totalSur, imported };
-  }, [matched]);
-
-  /* Import all to DB */
-  const handleImportAll = async () => {
-    const toImport = matched.filter(e => e.dbEmployee && e.maiAcumMin !== null);
-    if (toImport.length === 0) { toast.error("Nenhum funcionário encontrado no sistema para importar."); return; }
-    setImporting(true);
-    try {
-      const entries = toImport.map(e => ({
-        employeeId: e.dbEmployee!.id,
-        minutes: e.maiAcumMin!,
-        nome: e.nome,
-        saldoDezMin: e.saldoDezMin ?? undefined,
-      }));
-      const r = await fetch("/api/pin-project/import-bulk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entries }),
-      });
-      const j = await r.json();
-      if (j.success) {
-        toast.success(`${j.imported} saldos importados com sucesso!`);
-        await loadDbEmployees();
-      } else {
-        toast.error(j.error ?? "Erro na importação");
-      }
-    } catch {
-      toast.error("Erro ao importar saldos");
-    } finally {
-      setImporting(false);
-    }
-  };
-
-  /* Parse HH:MM or -HH:MM string used in the import month modal */
-  const parseColonHHMM = (s: string): number | null => {
-    const m = s.trim().match(/^(-?)(\d+):(\d{2})$/);
-    if (!m) return null;
-    const sign = m[1] ? -1 : 1;
-    return sign * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10));
-  };
-
-  /* Import a specific future month */
-  const handleImportMonth = async () => {
-    const toImport = matched.filter(e => {
-      if (!e.dbEmployee) return false;
-      const raw = importMonthData[e.dbEmployee.id];
-      return raw && raw.trim();
-    });
-    if (toImport.length === 0) { toast.error("Preencha ao menos um saldo para importar."); return; }
-    setImportingMonth(true);
-    try {
-      const entries = toImport.map(e => {
-        const raw = importMonthData[e.dbEmployee!.id] ?? "";
-        const min = parseColonHHMM(raw);
-        return { employeeId: e.dbEmployee!.id, minutes: min ?? 0, nome: e.nome };
-      }).filter(e => e.minutes !== 0);
-
-      const r = await fetch("/api/pin-project/import-month", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ monthKey: importMonthKey, entries }),
-      });
-      const j = await r.json();
-      if (j.success) {
-        toast.success(`${j.imported} saldos de ${MONTH_KEY_LABEL[importMonthKey] ?? importMonthKey} importados!`);
-        setShowImportMonth(false);
-        setImportMonthData({});
-        await loadDbEmployees();
-      } else {
-        toast.error(j.error ?? "Erro na importação");
-      }
-    } catch {
-      toast.error("Erro de conexão");
-    } finally {
-      setImportingMonth(false);
-    }
-  };
-
-  /* Manually link an unmatched Excel row to a DB employee, then import its balance immediately */
-  const handleManualLink = async (ex: MatchedEntry, employeeId: string) => {
-    const linkKey = ex.cpf + "|" + ex.nome;
-    setManualLink(linkKey, employeeId);
-    if (ex.maiAcumMin === null) return;
-    try {
-      const r = await fetch("/api/pin-project/import-bulk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          entries: [{ employeeId, minutes: ex.maiAcumMin, nome: ex.nome, saldoDezMin: ex.saldoDezMin ?? undefined }],
-        }),
-      });
-      const j = await r.json();
-      if (j.success) {
-        toast.success(`${ex.nome} vinculado e saldo importado!`);
-        await loadDbEmployees();
-      } else {
-        toast.error(j.error ?? "Vinculado, mas falha ao importar saldo");
-      }
-    } catch {
-      toast.error("Vinculado, mas falha ao importar saldo");
-    }
-  };
-
-  /* Save individual balance */
-  const handleSave = async (ex: MatchedEntry) => {
-    if (!ex.dbEmployee) { toast.error("Funcionário não encontrado no sistema."); return; }
-    const st = editStates[ex.cpf + ex.nome];
-    if (!st) return;
-    const min = parseHHMM(st.minutes);
-    if (min === null) { toast.error("Formato inválido. Use ex: 39h18m ou -3h39m"); return; }
-    setSavingId(ex.dbEmployee.id);
-    try {
-      const r = await fetch(`/api/pin-project/balance/${ex.dbEmployee.id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ minutes: min }),
-      });
-      const j = await r.json();
-      if (j.success) {
-        toast.success("Saldo salvo!");
-        setEditStates(p => ({ ...p, [ex.cpf + ex.nome]: { ...p[ex.cpf + ex.nome], open: false } }));
-        await loadDbEmployees();
-      } else {
-        toast.error(j.error ?? "Erro ao salvar");
-      }
-    } catch {
-      toast.error("Erro de conexão");
-    } finally {
-      setSavingId(null);
-    }
-  };
+    const withData = rows.map(r => ({ r, acum: latestMonthOf(r)?.data.acum ?? null }));
+    const deficits = withData.filter(x => x.acum !== null && x.acum < 0);
+    const ok       = withData.filter(x => x.acum !== null && x.acum >= 0);
+    const totalDef = deficits.reduce((s, x) => s + (x.acum ?? 0), 0);
+    return { total: rows.length, deficits: deficits.length, ok: ok.length, totalDef };
+  }, [rows, latestMonthOf]);
 
   const toggleSort = (key: typeof sortKey) => {
     if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -486,33 +183,58 @@ export default function PinProject() {
       ? (sortDir === "asc" ? <ChevronUp className="w-3 h-3 inline ml-0.5" /> : <ChevronDown className="w-3 h-3 inline ml-0.5" />)
       : <ChevronDown className="w-3 h-3 inline ml-0.5 opacity-30" />;
 
-  /* ── Status of an entry ──────────────────────────────────────────────────── */
-  const entryStatus = (e: MatchedEntry) => {
-    if (!e.matched) return "no_system";
-    const dbMin = e.dbEmployee?.pinSeedMinutes;
-    if (e.maiAcumMin === null) return "no_excel_may";
-    if (dbMin === null) return "not_imported";
-    if (dbMin !== e.maiAcumMin) return "diverge";
-    return "ok";
+  /* ── Editar/reverter um mês do funcionário selecionado (modal) ──────────── */
+  const selectedEmp = selectedEmpId ? rows.find(r => r.id === selectedEmpId) ?? null : null;
+
+  const openMonthEdit = (mk: string, currentVal: number | null) => {
+    setEditingMk(mk);
+    setEditValue(currentVal !== null ? toHHMMRaw(currentVal) : "");
   };
 
-  /* ── Month accumulation mini-bar ────────────────────────────────────────── */
-  function MonthBar({ min, goal }: { min: number | null; goal: number }) {
-    if (min === null) return <span className="text-[10px] text-muted-foreground/40">—</span>;
-    const pct = Math.min(Math.abs(min) / goal * 100, 200);
-    const isNeg = min < 0;
-    return (
-      <div className="flex flex-col items-center gap-0.5">
-        <span className={cn("text-[10px] font-mono font-semibold", isNeg ? "text-red-600" : "text-emerald-600")}>
-          {toHHMMRaw(min)}
-        </span>
-        <div className="w-12 h-1 bg-muted rounded-full overflow-hidden">
-          <div className={cn("h-full rounded-full transition-all", isNeg ? "bg-red-400" : "bg-emerald-400")}
-            style={{ width: `${Math.min(pct, 100)}%` }} />
-        </div>
-      </div>
-    );
-  }
+  const saveMonthEdit = async () => {
+    if (!selectedEmpId || !editingMk) return;
+    const min = parseHHMM(editValue);
+    if (min === null) { toast.error("Formato inválido. Use ex: 39:18 ou -03:39"); return; }
+    setSavingMk(editingMk);
+    try {
+      const r = await fetch(`/api/pin-project/balance/${selectedEmpId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ monthKey: editingMk, minutes: min }),
+      });
+      const j = await r.json();
+      if (j.success) {
+        toast.success(`Saldo de ${monthKeyLabel(editingMk)} corrigido — saldo atual recalculado`);
+        setEditingMk(null);
+        await load();
+      } else {
+        toast.error(j.error ?? "Erro ao salvar");
+      }
+    } catch {
+      toast.error("Erro de conexão");
+    } finally {
+      setSavingMk(null);
+    }
+  };
+
+  const revertMonth = async (mk: string) => {
+    if (!selectedEmpId) return;
+    setSavingMk(mk);
+    try {
+      const r = await fetch(`/api/pin-project/balance/${selectedEmpId}?monthKey=${mk}`, { method: "DELETE" });
+      const j = await r.json();
+      if (j.success) {
+        toast.success(`${monthKeyLabel(mk)} revertido para o valor padrão`);
+        await load();
+      } else {
+        toast.error(j.error ?? "Erro ao reverter");
+      }
+    } catch {
+      toast.error("Erro de conexão");
+    } finally {
+      setSavingMk(null);
+    }
+  };
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
@@ -526,30 +248,18 @@ export default function PinProject() {
             <Badge variant="outline" className="text-blue-700 border-blue-200 bg-blue-50 text-xs">Projeto PIN 2026</Badge>
           </div>
           <p className="text-sm text-muted-foreground">
-            Saldos acumulados do Projeto PIN — Jan–Mai/26 da planilha · Jun/26 em diante calculados automaticamente do espelho de ponto
+            Jan–Jul/26 congelado pela planilha oficial · Ago/26 em diante calculado automaticamente do espelho de ponto importado
           </p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Base histórica: <strong>PIN - HORAS AREAS 2026.xlsx</strong> · Decreto nº 70.273/2025
-            {allDynamicMonthKeys.length > 0 && (
-              <span className="ml-2 text-emerald-600 font-medium">
-                + {allDynamicMonthKeys.map(k => MONTH_KEY_LABEL[k] ?? k).join(", ")} (espelho de ponto)
-              </span>
-            )}
+            Clique no nome de um funcionário para corrigir qualquer mês — único lugar do sistema para ajustar banco de horas do Projeto PIN · Decreto nº 70.273/2025
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <Button variant="outline" size="sm" className="rounded-xl gap-2 text-xs" onClick={() => setShowInfo(v => !v)}>
             <Info className="w-3.5 h-3.5" /> Como funciona
           </Button>
-          <Button variant="outline" size="sm" className="rounded-xl gap-2 text-xs" onClick={loadDbEmployees} disabled={loading}>
+          <Button variant="outline" size="sm" className="rounded-xl gap-2 text-xs" onClick={load} disabled={loading}>
             <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} /> Atualizar
-          </Button>
-          <Button variant="outline" size="sm" className="rounded-xl gap-2 text-xs border-emerald-300 text-emerald-700 hover:bg-emerald-50" onClick={() => setShowImportMonth(true)}>
-            <BarChart3 className="w-3.5 h-3.5" /> Importar Mês Novo
-          </Button>
-          <Button size="sm" className="rounded-xl gap-2 text-xs bg-blue-600 hover:bg-blue-700 text-white" onClick={handleImportAll} disabled={importing || loading}>
-            {importing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-            Importar Jan–Mai/2026
           </Button>
         </div>
       </div>
@@ -562,32 +272,29 @@ export default function PinProject() {
               <CardContent className="pt-4 pb-4">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                   <div>
-                    <p className="font-bold text-blue-800 mb-1.5 flex items-center gap-1.5"><Clock className="w-4 h-4" /> Metas mensais PIN</p>
-                    <div className="space-y-0.5 text-xs text-blue-700">
-                      {Object.entries(PIN_GOALS).slice(0,5).map(([m, g]) => (
-                        <div key={m} className="flex justify-between">
-                          <span className="capitalize">{MONTH_LABELS[m] ?? m}</span>
-                          <span className="font-mono font-bold">{g / 60}h {g === 2880 ? "(compensação)" : ""}</span>
-                        </div>
-                      ))}
-                    </div>
+                    <p className="font-bold text-blue-800 mb-1.5 flex items-center gap-1.5"><Clock className="w-4 h-4" /> Prioridade por mês</p>
+                    <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
+                      <li>Correção manual do admin (se existir)</li>
+                      <li>Planilha oficial congelada (Jan–Jul/26)</li>
+                      <li>Cálculo automático do espelho de ponto (Ago/26+)</li>
+                    </ul>
                   </div>
                   <div>
                     <p className="font-bold text-blue-800 mb-1.5 flex items-center gap-1.5"><Target className="w-4 h-4" /> Como calcular</p>
                     <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
-                      <li>Saldo do mês = horas trabalhadas − meta do mês</li>
+                      <li>Saldo do mês = horas trabalhadas − meta do mês (sempre 40h no banco de horas)</li>
                       <li>Saldo acumulado = saldo acumulado anterior + saldo do mês</li>
                       <li>Saldo <strong>positivo</strong> = cumpriu e superou a meta</li>
                       <li>Saldo <strong>negativo</strong> = deve horas ao projeto PIN</li>
                     </ul>
                   </div>
                   <div>
-                    <p className="font-bold text-blue-800 mb-1.5 flex items-center gap-1.5"><FileSpreadsheet className="w-4 h-4" /> Fluxo de trabalho</p>
+                    <p className="font-bold text-blue-800 mb-1.5 flex items-center gap-1.5"><Pencil className="w-4 h-4" /> Corrigir um mês</p>
                     <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
-                      <li>Jan–Mai/26: base na planilha importada (clique "Importar Jan–Mai")</li>
-                      <li>Jun/26 em diante: <strong>calculado automaticamente</strong> do espelho de ponto</li>
-                      <li>Coluna "Saldo Atual" sempre mostra o mês mais recente disponível</li>
-                      <li>Edição manual somente para correções excepcionais (ícone ✏️)</li>
+                      <li>Clique no nome do funcionário na tabela</li>
+                      <li>No painel, edite qualquer mês, passado ou atual</li>
+                      <li>O saldo atual é recalculado na hora, propagando pros meses seguintes</li>
+                      <li>Ícone <RotateCcw className="w-3 h-3 inline" /> reverte uma correção e volta ao valor padrão</li>
                     </ul>
                   </div>
                 </div>
@@ -598,12 +305,11 @@ export default function PinProject() {
       </AnimatePresence>
 
       {/* ── Summary cards ────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
         {[
-          { label: "Total PIN", value: stats.total, sub: "funcionários na planilha", icon: Users, color: "text-blue-600", bg: "bg-blue-50 border-blue-200" },
+          { label: "Total PIN", value: stats.total, sub: "funcionários rastreados", icon: Users, color: "text-blue-600", bg: "bg-blue-50 border-blue-200" },
           { label: "Em Dia",    value: stats.ok,    sub: "saldo ≥ 0h",              icon: CheckCircle2, color: "text-emerald-600", bg: "bg-emerald-50 border-emerald-200" },
           { label: "Déficit",   value: stats.deficits, sub: toHHMM(stats.totalDef) + " total", icon: AlertTriangle, color: "text-red-600", bg: "bg-red-50 border-red-200" },
-          { label: "Importados",value: stats.imported, sub: `de ${matched.filter(e=>e.dbEmployee&&e.maiAcumMin!==null).length} possíveis`, icon: BadgeCheck, color: "text-purple-600", bg: "bg-purple-50 border-purple-200" },
         ].map((c, i) => (
           <Card key={i} className={cn("rounded-[20px] border shadow-sm", c.bg)}>
             <CardContent className="pt-4 pb-4 flex items-center gap-3">
@@ -639,9 +345,9 @@ export default function PinProject() {
               <option value="all">Todos os status</option>
               <option value="ok">Em dia (saldo ≥ 0)</option>
               <option value="deficit">Com déficit (saldo negativo)</option>
-              <option value="sem_dados">Sem dados de Maio</option>
+              <option value="sem_dados">Sem dados</option>
             </select>
-            <span className="text-xs text-muted-foreground ml-auto">{visible.length} de {matched.length} registros</span>
+            <span className="text-xs text-muted-foreground ml-auto">{visible.length} de {rows.length} registros</span>
           </div>
         </CardContent>
       </Card>
@@ -652,15 +358,10 @@ export default function PinProject() {
           <div className="flex items-center justify-between">
             <div>
               <CardTitle className="text-base font-bold">
-                Saldos Acumulados — Jan a Mai/2026
-                {allDynamicMonthKeys.length > 0 && (
-                  <span className="ml-2 text-xs font-normal text-emerald-600">
-                    + {allDynamicMonthKeys.map(k => MONTH_KEY_LABEL[k] ?? k).join(", ")}
-                  </span>
-                )}
+                Saldos Acumulados — {monthKeys.length > 0 ? `${monthKeyLabel(monthKeys[0])} a ${monthKeyLabel(monthKeys[monthKeys.length - 1])}` : "—"}
               </CardTitle>
               <CardDescription className="mt-0.5 text-xs">
-                Saldo negativo = funcionário em déficit (célula vermelha na planilha original) · ★ = mês com meta de 48h
+                Saldo negativo = funcionário em déficit com o Projeto PIN
               </CardDescription>
             </div>
             <div className="flex gap-1 text-xs text-muted-foreground items-center">
@@ -681,238 +382,99 @@ export default function PinProject() {
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-border/60 bg-muted/30">
-                  <th className="px-4 py-2.5 text-left font-semibold text-muted-foreground cursor-pointer hover:text-foreground" onClick={() => toggleSort("nome")}>
+                  <th className="px-4 py-2.5 text-left font-semibold text-muted-foreground cursor-pointer hover:text-foreground whitespace-nowrap" onClick={() => toggleSort("nome")}>
                     Nome <SortIcon k="nome" />
                   </th>
-                  <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground cursor-pointer hover:text-foreground" onClick={() => toggleSort("area")}>
+                  <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground cursor-pointer hover:text-foreground whitespace-nowrap" onClick={() => toggleSort("area")}>
                     Área <SortIcon k="area" />
                   </th>
-                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Saldo Dez/25</th>
-                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Jan/26<br/><span className="text-[9px] font-normal opacity-60">meta 40h</span></th>
-                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Fev/26<br/><span className="text-[9px] font-normal opacity-60">meta 40h</span></th>
-                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Mar/26<br/><span className="text-[9px] font-normal opacity-60">meta 40h</span></th>
-                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Abr/26<br/><span className="text-[9px] font-normal opacity-60">meta 48h ★</span></th>
-                  <th className="px-3 py-2.5 text-center font-semibold text-foreground bg-blue-50/60">
-                    Mai/26<br/><span className="text-[9px] font-normal opacity-60">meta 40h</span>
+                  {monthKeys.map(mk => (
+                    <th key={mk} className="px-3 py-2.5 text-center font-semibold text-muted-foreground whitespace-nowrap">
+                      {monthKeyLabel(mk)}
+                    </th>
+                  ))}
+                  <th className="px-3 py-2.5 text-center font-semibold text-foreground bg-blue-50/60 whitespace-nowrap">
+                    Saldo Atual
                   </th>
-                  {/* Dynamic columns for months after May 2026 (auto-calculated from espelho de ponto) */}
-                  {allDynamicMonthKeys.map(mk => {
-                    const isManual = dbMonthKeys.includes(mk);
-                    return (
-                      <th key={mk} className="px-3 py-2.5 text-center font-semibold text-emerald-700 bg-emerald-50/40">
-                        {MONTH_KEY_LABEL[mk] ?? mk}<br/>
-                        <span className="text-[9px] font-normal opacity-60">
-                          meta {PIN_GOALS[mk.slice(0,3).toLowerCase()] ? PIN_GOALS[mk.slice(0,3).toLowerCase()] / 60 + "h" : "40h"}
-                        </span>
-                        <br/>
-                        <span className="text-[8px] font-normal text-emerald-500 opacity-70">
-                          {isManual ? "planilha" : "espelho ponto"}
-                        </span>
-                      </th>
-                    );
-                  })}
-                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Saldo Atual<br/><span className="text-[9px] font-normal opacity-60">auto-calculado</span></th>
-                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground">Ação</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/40">
-                {visible.map((e, i) => {
-                  const key = e.cpf + e.nome;
-                  const ed = editStates[key];
-                  const isEditOpen = ed?.open;
-                  const dbMin = e.dbEmployee?.pinSeedMinutes ?? null;
-                  const maiMin = e.maiAcumMin;
-                  const isNeg = (maiMin ?? 0) < 0;
-                  const hasMay = maiMin !== null;
-                  const status = entryStatus(e);
-                  const saving = savingId === e.dbEmployee?.id;
+                {visible.map((row, i) => {
+                  const latest = latestMonthOf(row);
+                  const latestAcum = latest?.data.acum ?? null;
+                  const isNeg = (latestAcum ?? 0) < 0;
 
                   return (
-                    <tr key={key} className={cn("group hover:bg-muted/30 transition-colors", i % 2 === 1 && "bg-muted/10")}>
+                    <tr
+                      key={row.id}
+                      className={cn("hover:bg-muted/40 transition-colors cursor-pointer", i % 2 === 1 && "bg-muted/10")}
+                      onClick={() => setSelectedEmpId(row.id)}
+                    >
                       {/* Nome */}
                       <td className="px-4 py-2 font-medium text-foreground">
-                        <div className="flex items-center gap-2">
-                          {hasMay ? (
+                        <button type="button" className="flex items-center gap-2 hover:text-blue-600 transition-colors group">
+                          {latestAcum !== null ? (
                             isNeg
                               ? <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
                               : <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
                           ) : <span className="w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0" />}
-                          <span className="truncate max-w-[180px]" title={e.nome}>{e.nome}</span>
-                          {!e.matched && <Badge variant="outline" className="text-[9px] px-1 py-0 border-orange-300 text-orange-600 shrink-0">não encontrado</Badge>}
-                        </div>
+                          <span className="truncate max-w-[180px] underline decoration-transparent group-hover:decoration-current" title={row.name}>{row.name}</span>
+                          {!row.pin_project && (
+                            <Badge variant="outline" className="text-[9px] px-1 py-0 border-muted-foreground/30 text-muted-foreground shrink-0">histórico</Badge>
+                          )}
+                          <ChevronRight className="w-3 h-3 opacity-0 group-hover:opacity-60 transition-opacity shrink-0" />
+                        </button>
                       </td>
                       {/* Área */}
                       <td className="px-3 py-2">
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0.5 border-border text-muted-foreground font-medium">{e.area}</Badge>
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0.5 border-border text-muted-foreground font-medium">
+                          {row.department ?? "Sem departamento"}
+                        </Badge>
                       </td>
-                      {/* Saldo Dez/25 */}
-                      <td className="px-3 py-2 text-center font-mono text-[11px] text-muted-foreground">
-                        {e.saldoDezMin !== null ? toHHMMRaw(e.saldoDezMin) : "—"}
-                      </td>
-                      {/* Meses Jan-Abr acumulado */}
-                      {[e.janAcumMin, e.fevAcumMin, e.marAcumMin, e.abrAcumMin].map((min, mi) => (
-                        <td key={mi} className="px-3 py-2 text-center">
-                          <MonthBar min={min} goal={mi === 3 ? PIN_GOALS.abr : PIN_GOALS.jan} />
-                        </td>
-                      ))}
-                      {/* Mai/26 — destaque */}
-                      <td className={cn("px-3 py-2 text-center bg-blue-50/40", !hasMay && "opacity-50")}>
-                        {hasMay ? (
-                          <div className="flex flex-col items-center gap-0.5">
-                            <span className={cn("text-xs font-mono font-bold", isNeg ? "text-red-600" : "text-emerald-600")}>
-                              {isNeg ? "▼ " : "▲ "}{toHHMMRaw(Math.abs(maiMin!))}
-                            </span>
-                            <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
-                              <div
-                                className={cn("h-full rounded-full", isNeg ? "bg-red-500" : "bg-emerald-500")}
-                                style={{ width: `${Math.min(Math.abs(maiMin!) / (PIN_GOALS.mai * 2) * 100, 100)}%` }}
-                              />
-                            </div>
-                          </div>
-                        ) : <span className="text-muted-foreground/40 text-[10px]">Sem dados</span>}
-                      </td>
-                      {/* Dynamic month cells (Jun, Jul, ...) — auto-calculated from espelho de ponto */}
-                      {allDynamicMonthKeys.map(mk => {
-                        const manualMin = e.dbEmployee?.pinSeeds?.[mk] ?? null;
-                        const autoData = e.dbEmployee ? autoBalances[e.dbEmployee.id]?.[mk] : undefined;
-                        const displayMin = manualMin ?? autoData?.acum ?? null;
-                        const isAuto = manualMin === null && autoData !== undefined;
-                        const isCurrentMonth = autoData?.isCurrentMonth ?? false;
-                        const goal = PIN_GOALS[mk.slice(0,3).toLowerCase()] ?? 2400;
-                        return (
-                          <td key={mk} className={cn("px-3 py-2 text-center", isCurrentMonth ? "bg-amber-50/30" : "bg-emerald-50/20")}>
-                            {displayMin !== null ? (
-                              <div className="flex flex-col items-center gap-0.5">
-                                <MonthBar min={displayMin} goal={goal} />
-                                {isAuto && (
-                                  <span className="text-[8px] text-emerald-500 opacity-60">auto</span>
-                                )}
-                                {isCurrentMonth && (
-                                  <span className="text-[8px] text-amber-500 opacity-70">em curso</span>
-                                )}
-                              </div>
-                            ) : (
+                      {/* Meses — somente leitura; edição acontece no modal (clique no nome) */}
+                      {monthKeys.map(mk => {
+                        const month = row.months[mk];
+                        if (!month) {
+                          return (
+                            <td key={mk} className="px-3 py-2 text-center">
                               <span className="text-[10px] text-muted-foreground/30">—</span>
-                            )}
+                            </td>
+                          );
+                        }
+                        const acum = month.acum;
+                        const neg = (acum ?? 0) < 0;
+                        return (
+                          <td key={mk} className={cn(
+                            "px-3 py-2 text-center",
+                            month.isCurrentMonth && "bg-amber-50/30",
+                            month.isManualOverride && "bg-purple-50/30",
+                          )}>
+                            <div className="flex flex-col items-center gap-0.5">
+                              {acum !== null ? (
+                                <span className={cn("text-[11px] font-mono font-semibold", neg ? "text-red-600" : "text-emerald-600")}>
+                                  {toHHMMRaw(acum)}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-muted-foreground/30">—</span>
+                              )}
+                              <div className="flex items-center gap-1 h-3">
+                                {month.isCurrentMonth && <span className="text-[8px] text-amber-500 opacity-70">em curso</span>}
+                                {month.isManualOverride && <span className="text-[8px] text-purple-500 opacity-70">ajustado</span>}
+                              </div>
+                            </div>
                           </td>
                         );
                       })}
-
-                      {/* Saldo Atual — latest auto-calculated balance */}
-                      <td className="px-3 py-2 text-center">
-                        {!e.matched ? (
-                          <span className="text-[10px] text-orange-500">Não vinculado</span>
-                        ) : (() => {
-                          // Find the most recent month with auto-calc data
-                          const empAutoData = e.dbEmployee ? autoBalances[e.dbEmployee.id] : undefined;
-                          if (empAutoData) {
-                            const latestMk = Object.keys(empAutoData)
-                              .sort((a, b) => monthKeyToNum(b) - monthKeyToNum(a))[0];
-                            if (latestMk) {
-                              const latest = empAutoData[latestMk];
-                              const acumVal = latest.acum;
-                              const isNoSeed = latest.noSeedMode;
-                              return (
-                                <div className="flex flex-col items-center gap-0.5">
-                                  <span className={cn("text-[11px] font-mono font-semibold",
-                                    acumVal === null ? "text-muted-foreground" :
-                                    acumVal < 0 ? "text-red-600" : "text-emerald-600"
-                                  )}>
-                                    {acumVal !== null ? toHHMMRaw(acumVal) : "—"}
-                                  </span>
-                                  <span className="text-[8px] text-muted-foreground opacity-60">
-                                    {MONTH_KEY_LABEL[latestMk] ?? latestMk}
-                                    {isNoSeed ? " *" : ""}
-                                  </span>
-                                </div>
-                              );
-                            }
-                          }
-                          // Fallback to May imported value
-                          return dbMin !== null ? (
-                            <span className={cn("text-[11px] font-mono font-semibold", (dbMin ?? 0) < 0 ? "text-red-600" : "text-emerald-600")}>
-                              {toHHMMRaw(dbMin)}
+                      {/* Saldo Atual */}
+                      <td className="px-3 py-2 text-center bg-blue-50/40">
+                        {latestAcum !== null ? (
+                          <div className="flex flex-col items-center gap-0.5">
+                            <span className={cn("text-xs font-mono font-bold", isNeg ? "text-red-600" : "text-emerald-600")}>
+                              {isNeg ? "▼ " : "▲ "}{toHHMMRaw(Math.abs(latestAcum))}
                             </span>
-                          ) : (
-                            <span className="text-[10px] text-muted-foreground/50">Sem saldo base</span>
-                          );
-                        })()}
-                      </td>
-                      {/* Ação */}
-                      <td className="px-3 py-2 text-center relative">
-                        {e.matched ? (
-                          isEditOpen ? (
-                            <div className="flex items-center gap-1 justify-center">
-                              <input
-                                type="text"
-                                value={ed?.minutes ?? ""}
-                                onChange={ev => setEditStates(p => ({ ...p, [key]: { ...p[key], minutes: ev.target.value } }))}
-                                placeholder="ex: 39h18m"
-                                className="w-24 px-2 py-1 text-[11px] border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/30 font-mono"
-                                onKeyDown={ev => { if (ev.key === "Enter") handleSave(e); if (ev.key === "Escape") setEditStates(p => ({ ...p, [key]: { ...p[key], open: false } })); }}
-                              />
-                              <Button size="sm" className="h-6 px-2 text-[10px] gap-1 rounded-lg" onClick={() => handleSave(e)} disabled={saving}>
-                                {saving ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-                              </Button>
-                              <Button size="sm" variant="ghost" className="h-6 px-1.5 rounded-lg" onClick={() => setEditStates(p => ({ ...p, [key]: { ...p[key], open: false } }))}>
-                                <X className="w-3 h-3" />
-                              </Button>
-                            </div>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-6 px-2 text-[10px] gap-1 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
-                              onClick={() => setEditStates(p => ({
-                                ...p,
-                                [key]: { open: true, minutes: maiMin !== null ? toHHMMRaw(maiMin) : "" }
-                              }))}
-                            >
-                              <Edit2 className="w-3 h-3" /> Editar
-                            </Button>
-                          )
-                        ) : (
-                          <>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-6 px-2 text-[10px] gap-1 rounded-lg border-orange-300 text-orange-600 hover:bg-orange-50"
-                              onClick={() => setLinkPickerKey(linkPickerKey === key ? null : key)}
-                            >
-                              <Users className="w-3 h-3" /> Vincular
-                            </Button>
-                            {linkPickerKey === key && (
-                              <div className="absolute right-0 top-full mt-1 z-20 w-64 bg-card border border-border rounded-xl shadow-xl p-2 text-left">
-                                <Input
-                                  autoFocus
-                                  value={linkPickerSearch}
-                                  onChange={ev => setLinkPickerSearch(ev.target.value)}
-                                  placeholder="Buscar funcionário..."
-                                  className="h-7 text-[11px] rounded-lg mb-1.5"
-                                />
-                                <div className="max-h-48 overflow-y-auto space-y-0.5">
-                                  {dbEmps
-                                    .filter(d => d.name.toLowerCase().includes(linkPickerSearch.toLowerCase()))
-                                    .slice(0, 30)
-                                    .map(d => (
-                                      <button
-                                        key={d.id}
-                                        type="button"
-                                        className="w-full text-left px-2 py-1 text-[11px] rounded-lg hover:bg-muted/60 truncate"
-                                        onClick={() => handleManualLink(e, d.id)}
-                                        title={d.name}
-                                      >
-                                        {d.name}
-                                      </button>
-                                    ))}
-                                  {dbEmps.filter(d => d.name.toLowerCase().includes(linkPickerSearch.toLowerCase())).length === 0 && (
-                                    <p className="text-[10px] text-muted-foreground px-2 py-1">Nenhum funcionário encontrado</p>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                          </>
-                        )}
+                            <span className="text-[8px] text-muted-foreground opacity-60">{latest ? monthKeyLabel(latest.mk) : ""}</span>
+                          </div>
+                        ) : <span className="text-muted-foreground/40 text-[10px]">Sem dados</span>}
                       </td>
                     </tr>
                   );
@@ -930,9 +492,8 @@ export default function PinProject() {
 
         {/* Footer legend */}
         <div className="px-6 py-3 border-t border-border/40 bg-muted/20 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
-          <span><strong>★</strong> Abril tem meta de <strong>48h</strong> (compensação de feriado conforme Decreto nº 70.273/2025)</span>
-          <span>· Saldo acumulado = soma de todos os saldos mensais desde Dez/2025</span>
-          <span>· Coluna <strong>Sistema</strong> = valor salvo no banco de dados após importação</span>
+          <span>Banco de horas do Projeto PIN sempre desconta 40h/mês (meta de bônus pode ser maior em meses de compensação de feriado)</span>
+          <span>· <span className="text-purple-500 font-medium">ajustado</span> = correção manual do admin, sobrescreve o valor padrão</span>
         </div>
       </Card>
 
@@ -944,15 +505,15 @@ export default function PinProject() {
               <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
               <div>
                 <p className="text-sm font-bold text-red-800">
-                  {stats.deficits} funcionário{stats.deficits > 1 ? "s" : ""} com déficit acumulado até Mai/2026
+                  {stats.deficits} funcionário{stats.deficits > 1 ? "s" : ""} com déficit acumulado
                 </p>
                 <p className="text-xs text-red-700 mt-1">
                   Total de déficit: <strong>{toHHMM(stats.totalDef)}</strong> — esses funcionários precisam compensar as horas faltantes nos próximos meses do Projeto PIN.
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {matched.filter(e => (e.maiAcumMin ?? 0) < 0).map(e => (
-                    <Badge key={e.cpf + e.nome} className="text-[10px] bg-red-100 text-red-700 border border-red-200 hover:bg-red-200">
-                      {e.nome.split(" ")[0]} {e.nome.split(" ").slice(-1)[0]} ({toHHMM(e.maiAcumMin)})
+                  {rows.filter(r => (latestMonthOf(r)?.data.acum ?? 0) < 0).map(r => (
+                    <Badge key={r.id} className="text-[10px] bg-red-100 text-red-700 border border-red-200 hover:bg-red-200">
+                      {r.name.split(" ")[0]} {r.name.split(" ").slice(-1)[0]} ({toHHMM(latestMonthOf(r)?.data.acum ?? null)})
                     </Badge>
                   ))}
                 </div>
@@ -962,104 +523,120 @@ export default function PinProject() {
         </Card>
       )}
 
-      {/* ── Importar Mês Novo modal ───────────────────────────────────────────── */}
+      {/* ── Modal de detalhe/edição por funcionário ──────────────────────────── */}
       <AnimatePresence>
-        {showImportMonth && (
+        {selectedEmp && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
-            onClick={e => { if (e.target === e.currentTarget) setShowImportMonth(false); }}
+            onClick={e => { if (e.target === e.currentTarget) { setSelectedEmpId(null); setEditingMk(null); } }}
           >
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-card rounded-[24px] shadow-2xl border border-border w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden"
+              className="bg-card rounded-[24px] shadow-2xl border border-border w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden"
             >
               <div className="px-6 py-5 border-b border-border/60 flex items-center justify-between shrink-0">
-                <div>
-                  <h2 className="text-base font-bold flex items-center gap-2">
-                    <BarChart3 className="w-4 h-4 text-emerald-600" /> Importar Mês Novo
-                  </h2>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Insira os saldos acumulados de um novo mês para cada funcionário
+                <div className="min-w-0">
+                  <h2 className="text-base font-bold truncate">{selectedEmp.name}</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1.5">
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-border text-muted-foreground font-medium">
+                      {selectedEmp.department ?? "Sem departamento"}
+                    </Badge>
+                    {!selectedEmp.pin_project && (
+                      <Badge variant="outline" className="text-[9px] px-1 py-0 border-muted-foreground/30 text-muted-foreground">histórico</Badge>
+                    )}
                   </p>
                 </div>
-                <Button variant="ghost" size="sm" className="rounded-xl" onClick={() => setShowImportMonth(false)}>
+                <Button variant="ghost" size="sm" className="rounded-xl shrink-0" onClick={() => { setSelectedEmpId(null); setEditingMk(null); }}>
                   <X className="w-4 h-4" />
                 </Button>
               </div>
 
-              <div className="px-6 py-4 border-b border-border/40 flex items-center gap-3 shrink-0">
-                <label className="text-xs font-semibold text-muted-foreground">Mês de referência:</label>
-                <select
-                  value={importMonthKey}
-                  onChange={e => setImportMonthKey(e.target.value)}
-                  className="text-sm rounded-xl border border-border bg-background px-3 py-2 h-9 focus:outline-none focus:ring-2 focus:ring-primary/20"
-                >
-                  {["JUN2026","JUL2026","AGO2026","SET2026","OUT2026","NOV2026","DEZ2026"].map(k => (
-                    <option key={k} value={k}>{MONTH_KEY_LABEL[k] ?? k} — meta {(PIN_GOALS[k.slice(0,3).toLowerCase()] ?? 2400) / 60}h</option>
-                  ))}
-                </select>
-                <span className="text-xs text-muted-foreground ml-auto">
-                  Formato: <code className="bg-muted px-1 py-0.5 rounded text-[10px]">HH:MM</code> ou <code className="bg-muted px-1 py-0.5 rounded text-[10px]">-HH:MM</code>
-                </span>
-              </div>
-
               <div className="flex-1 overflow-y-auto px-6 py-4 space-y-1.5">
-                {matched.filter(e => e.matched && e.dbEmployee).map(e => (
-                  <div key={e.dbEmployee!.id} className="flex items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <span className="text-xs font-medium truncate block">{e.nome}</span>
-                      <span className="text-[10px] text-muted-foreground">{e.area}</span>
-                    </div>
-                    <div className="text-[10px] text-muted-foreground w-20 text-right shrink-0">
-                      Mai/26: <span className={cn("font-mono font-semibold", (e.maiAcumMin ?? 0) < 0 ? "text-red-500" : "text-emerald-600")}>
-                        {e.maiAcumMin !== null ? toHHMMRaw(e.maiAcumMin) : "—"}
-                      </span>
-                    </div>
-                    <Input
-                      type="text"
-                      placeholder="00:00"
-                      value={importMonthData[e.dbEmployee!.id] ?? ""}
-                      onChange={ev => setImportMonthData(p => ({ ...p, [e.dbEmployee!.id]: ev.target.value }))}
-                      className="w-28 h-8 text-xs font-mono rounded-xl text-center"
-                    />
-                  </div>
-                ))}
-                {matched.filter(e => e.matched && e.dbEmployee).length === 0 && (
-                  <p className="text-sm text-muted-foreground py-8 text-center">
-                    Nenhum funcionário vinculado. Importe Jan–Mai/2026 primeiro.
-                  </p>
-                )}
+                {Object.keys(selectedEmp.months)
+                  .sort((a, b) => monthKeyToNum(a) - monthKeyToNum(b))
+                  .map(mk => {
+                    const month = selectedEmp.months[mk];
+                    const isEditing = editingMk === mk;
+                    const isSaving = savingMk === mk;
+                    const neg = (month.acum ?? 0) < 0;
+
+                    return (
+                      <div key={mk} className={cn(
+                        "flex items-center gap-3 px-3 py-2.5 rounded-xl",
+                        month.isCurrentMonth && "bg-amber-50/50",
+                        month.isManualOverride && "bg-purple-50/50",
+                        !month.isCurrentMonth && !month.isManualOverride && "hover:bg-muted/30",
+                      )}>
+                        <div className="w-16 shrink-0">
+                          <span className="text-sm font-semibold">{monthKeyLabel(mk)}</span>
+                        </div>
+                        <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                          {month.isCurrentMonth && <span className="text-[9px] text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded-full">em curso</span>}
+                          {month.isManualOverride && <span className="text-[9px] text-purple-600 bg-purple-100 px-1.5 py-0.5 rounded-full">ajustado</span>}
+                        </div>
+
+                        {isEditing ? (
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <input
+                              autoFocus
+                              type="text"
+                              value={editValue}
+                              onChange={ev => setEditValue(ev.target.value)}
+                              placeholder="00:00"
+                              className="w-24 px-2 py-1.5 text-xs border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/30 font-mono text-center"
+                              onKeyDown={ev => { if (ev.key === "Enter") saveMonthEdit(); if (ev.key === "Escape") setEditingMk(null); }}
+                            />
+                            <Button size="sm" className="h-7 w-7 p-0 rounded-lg" onClick={saveMonthEdit} disabled={isSaving}>
+                              {isSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                            </Button>
+                            <Button size="sm" variant="ghost" className="h-7 w-7 p-0 rounded-lg" onClick={() => setEditingMk(null)}>
+                              <X className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className={cn("text-sm font-mono font-bold w-20 text-right", month.acum === null ? "text-muted-foreground/40" : neg ? "text-red-600" : "text-emerald-600")}>
+                              {toHHMMRaw(month.acum)}
+                            </span>
+                            {month.isManualOverride && (
+                              <Button
+                                size="sm" variant="ghost" className="h-7 w-7 p-0 rounded-lg"
+                                title="Reverter para valor padrão"
+                                onClick={() => revertMonth(mk)}
+                                disabled={isSaving}
+                              >
+                                {isSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5 text-purple-500" />}
+                              </Button>
+                            )}
+                            <Button
+                              size="sm" variant="ghost" className="h-7 w-7 p-0 rounded-lg"
+                              title="Corrigir este mês"
+                              onClick={() => openMonthEdit(mk, month.acum)}
+                              disabled={isSaving}
+                            >
+                              <Pencil className="w-3.5 h-3.5 text-muted-foreground" />
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
               </div>
 
-              <div className="px-6 py-4 border-t border-border/40 flex items-center justify-between shrink-0">
-                <p className="text-xs text-muted-foreground">
-                  {Object.values(importMonthData).filter((v): v is string => typeof v === "string" && v.trim() !== "").length} funcionários preenchidos
+              <div className="px-6 py-3 border-t border-border/40 shrink-0">
+                <p className="text-[10px] text-muted-foreground">
+                  Corrigir um mês recalcula automaticamente o saldo atual e todos os meses seguintes.
                 </p>
-                <div className="flex gap-2">
-                  <Button variant="outline" size="sm" className="rounded-xl" onClick={() => setShowImportMonth(false)}>
-                    Cancelar
-                  </Button>
-                  <Button
-                    size="sm"
-                    className="rounded-xl gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
-                    onClick={handleImportMonth}
-                    disabled={importingMonth}
-                  >
-                    {importingMonth ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-                    Importar {MONTH_KEY_LABEL[importMonthKey] ?? importMonthKey}
-                  </Button>
-                </div>
               </div>
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
-
     </motion.div>
   );
 }

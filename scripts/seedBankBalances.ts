@@ -1,7 +1,15 @@
-﻿process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+﻿// ⚠️ SCRIPT HISTÓRICO/OBSOLETO — NÃO RODAR EM PRODUÇÃO.
+// Semeou o banco de horas em 08/05/2026 com valores estáticos de uma
+// planilha antiga. Rodar de novo hoje SOBRESCREVE (delete + insert) o
+// banco de horas atual de ~53 funcionários com esses valores obsoletos,
+// destruindo os saldos corretos calculados pelo sistema (ver Saldos
+// Acumulados / Projeto PIN). Mantido só como referência histórica.
+import "dotenv/config";
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 import { createClient } from "@supabase/supabase-js";
-const SUPABASE_URL = "https://yhwiertvbkeirvlieuag.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlod2llcnR2YmtlaXJ2bGlldWFnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3ODEzNzMzMCwiZXhwIjoyMDkzNzEzMzMwfQ.EQ1ouVv076Rj_QcepmsXrhVtXuauEjQT2fidDBsiWDM";
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE;
+if (!SUPABASE_URL || !SUPABASE_KEY) throw new Error("Missing VITE_SUPABASE_URL / SUPABASE_SERVICE_ROLE in .env");
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 function parseMinutes(t: string): number {
   if (!t) return 0;
@@ -65,6 +73,11 @@ const ROWS: {id:string;name:string;time:string;sign:1|-1}[] = [
   {id:"5eaba6ec-08e6-4248-86a1-0ab80247f4c0",name:"WANDER HELENO SALLES",time:"27:23",sign:1},
 ];
 async function main() {
+  if (process.env.CONFIRM_OBSOLETE_SEED !== "yes-i-know-this-overwrites-current-data") {
+    console.error("Bloqueado: este script sobrescreve o banco de horas atual com dados obsoletos de 08/05/2026.");
+    console.error("Se você realmente quer rodar isso, defina CONFIRM_OBSOLETE_SEED=yes-i-know-this-overwrites-current-data");
+    process.exit(1);
+  }
   let ok=0, fail=0;
   for (const row of ROWS) {
     const minutes = parseMinutes(row.time) * row.sign;

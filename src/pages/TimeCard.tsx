@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { fetchPinAutoBalances, pinAccumFor, PIN_BANK_GOAL } from "@/src/lib/pinHistoricalData";
 
 /* ── Types ─────────────────────────────────────────────────────────────────── */
 type TimeEntry = { time: string; type: "IN" | "OUT" };
@@ -202,26 +203,32 @@ function calcNightMinutes(entries: Array<{ time: string; type: string }>): numbe
 
 async function loadLogoDataUrl(): Promise<string | undefined> {
   try {
-    const res = await fetch("/img/logo.png");
+    const res = await fetch("/img/BRASAO-3-texto-branco.png");
     if (!res.ok) return undefined;
     const blob = await res.blob();
-    return new Promise(resolve => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => resolve(undefined);
-      reader.readAsDataURL(blob);
-    });
+    // O arquivo original tem o brasão à esquerda e um texto em branco à
+    // direita (pensado pra fundo escuro) — em uma folha branca esse texto
+    // fica invisível. Recorta só o emblema colorido antes de gerar o PDF.
+    const bitmap = await createImageBitmap(blob);
+    const cropW = Math.min(420, bitmap.width);
+    const canvas = document.createElement("canvas");
+    canvas.width = cropW;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return undefined;
+    ctx.drawImage(bitmap, 0, 0, cropW, bitmap.height, 0, 0, cropW, bitmap.height);
+    return canvas.toDataURL("image/png");
   } catch { return undefined; }
 }
 
 async function buildEspelhoPdf(opts: PdfOptions): Promise<jsPDF> {
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   renderEmpToDoc(doc, opts);
   return doc;
 }
 
 async function buildAllEspelhosPdf(empDataList: PdfOptions[]): Promise<jsPDF> {
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   for (let i = 0; i < empDataList.length; i++) {
     if (i > 0) doc.addPage();
     renderEmpToDoc(doc, empDataList[i]);
@@ -234,9 +241,10 @@ async function buildAllEspelhosPdf(empDataList: PdfOptions[]): Promise<jsPDF> {
 function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
   const { emp, year, month, allDays, recordsByDate, recordCalcs, totals, totalAccumulatedBank, expectedMonthly, logoDataUrl } = opts;
 
-  // Portrait A4: 210 × 297 mm — enterprise clean layout
-  const W = 210, H = 297, ML = 8, MR = 202, CW = MR - ML; // CW = 194mm
-  const HEADER_H = 16; // compact professional header
+  // Landscape A4: 297 × 210 mm — todo o mês cabe em uma única folha, com mais
+  // espaço horizontal pras colunas (marcações, justificativa) do que em retrato.
+  const W = 297, H = 210, ML = 10, MR = 287, CW = MR - ML; // CW = 277mm
+  const HEADER_H = 11; // cabeçalho enxuto — libera altura pra tabela caber numa folha só
 
   const monthLabel = MONTHS[month - 1] + " / " + year;
   const nowDt      = new Date();
@@ -278,41 +286,42 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
     sd(C.grayLine); doc.setLineWidth(0.3);
     doc.line(0, HEADER_H, W, HEADER_H);
 
-    // Logo (left zone, ≈0–45mm)
+    // Logo — brasão recortado (só o emblema, sem a área de texto branco que
+    // ficaria invisível em fundo branco), proporção ~0.855:1
     if (logoDataUrl) {
       try {
-        const lW = 33, lH = 12;
+        const lH = HEADER_H - 2, lW = lH * 0.855;
         doc.addImage(logoDataUrl, "PNG", ML + 1, (HEADER_H - lH) / 2, lW, lH);
       } catch { /* skip */ }
     }
 
     // Vertical dividers
     sd(C.grayLine); doc.setLineWidth(0.2);
-    doc.line(ML + 37, 3, ML + 37, HEADER_H - 3);
-    doc.line(MR - 38, 3, MR - 38, HEADER_H - 3);
+    doc.line(ML + 16, 2, ML + 16, HEADER_H - 2);
+    doc.line(MR - 38, 2, MR - 38, HEADER_H - 2);
 
     // Center zone
-    const cx = (ML + 37 + MR - 38) / 2;
-    doc.setFont("helvetica", "normal"); doc.setFontSize(3.8); st(C.grayText);
-    doc.text("ESPELHO DE PONTO — CONTROLE DE FREQUÊNCIA", cx, 5, { align: "center" });
-    doc.setFont("helvetica", "bold"); doc.setFontSize(7.5); st(C.black);
-    doc.text(ORG_NAME, cx, 11.5, { align: "center" });
+    const cx = (ML + 16 + MR - 38) / 2;
+    doc.setFont("helvetica", "normal"); doc.setFontSize(3.3); st(C.grayText);
+    doc.text("ESPELHO DE PONTO — CONTROLE DE FREQUÊNCIA", cx, 3.8, { align: "center" });
+    doc.setFont("helvetica", "bold"); doc.setFontSize(6.5); st(C.black);
+    doc.text(ORG_NAME, cx, 8, { align: "center" });
 
     // Right zone
     const rx = MR - 1;
-    doc.setFont("helvetica", "normal"); doc.setFontSize(3.5); st(C.grayLight);
-    doc.text("COMPETÊNCIA", rx, 4.5, { align: "right" });
-    doc.setFont("helvetica", "bold"); doc.setFontSize(8.5); st(C.navy);
-    doc.text(monthLabel.toUpperCase(), rx, 10.5, { align: "right" });
-    doc.setFont("helvetica", "normal"); doc.setFontSize(3.2); st(C.grayLight);
-    doc.text(`Pág. ${localPage}/${total}  ·  Emitido: ${emitDate}`, rx, 14.5, { align: "right" });
+    doc.setFont("helvetica", "normal"); doc.setFontSize(3); st(C.grayLight);
+    doc.text("COMPETÊNCIA", rx, 3.3, { align: "right" });
+    doc.setFont("helvetica", "bold"); doc.setFontSize(7); st(C.navy);
+    doc.text(monthLabel.toUpperCase(), rx, 7.8, { align: "right" });
+    doc.setFont("helvetica", "normal"); doc.setFontSize(2.7); st(C.grayLight);
+    doc.text(`Pág. ${localPage}/${total}  ·  Emitido: ${emitDate}`, rx, 10.3, { align: "right" });
   }
 
   drawPageHeader(1, 1);
-  let curY = HEADER_H + 2;
+  let curY = HEADER_H + 1;
 
   // ── Employee info bar (flat, professional, no avatar) ─────────────────────
-  const empCardH = 13;
+  const empCardH = 9;
   // Background + border
   sf(C.white); doc.rect(ML, curY, CW, empCardH, "F");
   sd(C.grayLine); doc.setLineWidth(0.2); doc.rect(ML, curY, CW, empCardH, "S");
@@ -321,13 +330,13 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
 
   // Name row
   const nameStr = (emp.name.length > 44 ? emp.name.substring(0, 42) + "…" : emp.name).toUpperCase();
-  doc.setFont("helvetica", "bold"); doc.setFontSize(9); st(C.black);
-  doc.text(nameStr, ML + 5.5, curY + 5.5);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(7); st(C.black);
+  doc.text(nameStr, ML + 5.5, curY + 3.8);
 
   // ATIVO badge — fixed right position
-  sf([220, 252, 231] as RGB); doc.rect(MR - 18, curY + 1.5, 16, 5, "F");
-  doc.setFont("helvetica", "bold"); doc.setFontSize(4.5); st([21, 128, 61] as RGB);
-  doc.text("ATIVO", MR - 10, curY + 5.3, { align: "center" });
+  sf([220, 252, 231] as RGB); doc.rect(MR - 18, curY + 1, 16, 4, "F");
+  doc.setFont("helvetica", "bold"); doc.setFontSize(3.8); st([21, 128, 61] as RGB);
+  doc.text("ATIVO", MR - 10, curY + 3.6, { align: "center" });
 
   // 4 info columns (bottom half of card)
   const fields = [
@@ -341,14 +350,14 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
   const fColW = CW / 4;
   fields.forEach((f, i) => {
     const fx = ML + 4 + i * fColW;
-    if (i > 0) { sd(C.grayLine); doc.setLineWidth(0.1); doc.line(ML + i * fColW, curY + 7.5, ML + i * fColW, curY + empCardH - 0.5); }
-    doc.setFont("helvetica", "normal"); doc.setFontSize(3.2); st(C.grayLight);
-    doc.text(f.lbl, fx, curY + 9.2);
-    doc.setFont("helvetica", "bold"); doc.setFontSize(4.5); st(C.black);
-    doc.text(f.val, fx, curY + 12.2);
+    if (i > 0) { sd(C.grayLine); doc.setLineWidth(0.1); doc.line(ML + i * fColW, curY + 5, ML + i * fColW, curY + empCardH - 0.4); }
+    doc.setFont("helvetica", "normal"); doc.setFontSize(2.8); st(C.grayLight);
+    doc.text(f.lbl, fx, curY + 6.2);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(3.8); st(C.black);
+    doc.text(f.val, fx, curY + 8.4);
   });
 
-  curY += empCardH + 1;
+  curY += empCardH + 0.8;
 
   // ── KPI strip (12 cards, white, minimal) ─────────────────────────────────
   let diasTrab = 0, diasFer = 0, diasFalta = 0, diasCert = 0, diasVac = 0, diasFolga = 0;
@@ -364,7 +373,7 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
   const utilDays = allDays.filter(d => { const w = new Date(d + "T12:00:00").getDay(); return w !== 0 && w !== 6; }).length;
   const prsPct   = utilDays > 0 ? Math.round(((diasTrab + diasFer + diasCert + diasVac) / utilDays) * 100) : 0;
 
-  const kpiH = 9;
+  const kpiH = 7;
   type KpiCard = { lbl: string; val: string; valC: RGB };
   const kpiCards: KpiCard[] = [
     { lbl: "Dias Úteis",   val: String(utilDays),                                                                 valC: C.navy     },
@@ -376,7 +385,7 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
     { lbl: "Férias",       val: String(diasVac),                                                                   valC: diasVac   > 0 ? C.blue      : C.grayLight },
     { lbl: "H. Previstas", val: toHHMM(expectedMonthly),                                                          valC: C.grayText },
     { lbl: "Trabalhadas",  val: toHHMM(totals.work),                                                              valC: C.blue     },
-    { lbl: "Débitos",      val: totals.delay > 0 ? "-" + toHHMM(totals.delay) : "—",                             valC: totals.delay > 0 ? C.red   : C.grayLight },
+    { lbl: "Déficit",      val: totals.delay > 0 ? "-" + toHHMM(totals.delay) : "—",                             valC: totals.delay > 0 ? C.red   : C.grayLight },
     { lbl: "Banco Atual",  val: (totalAccumulatedBank >= 0 ? "+" : "") + toHHMM(Math.abs(totalAccumulatedBank)),  valC: totalAccumulatedBank >= 0 ? C.green : C.red },
     { lbl: "Presença",     val: prsPct + "%",                                                                      valC: prsPct >= 90 ? C.green : prsPct >= 75 ? C.amber : C.red },
   ];
@@ -387,12 +396,12 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
     sf(C.white); doc.roundedRect(kx + 0.3, curY, kW - 0.6, kpiH, 1, 1, "F");
     sd(C.grayLine); doc.setLineWidth(0.15);
     doc.roundedRect(kx + 0.3, curY, kW - 0.6, kpiH, 1, 1, "S");
-    doc.setFont("helvetica", "bold"); doc.setFontSize(5); st(k.valC);
-    doc.text(k.val, kx + kW / 2, curY + 5.5, { align: "center" });
-    doc.setFont("helvetica", "normal"); doc.setFontSize(2.7); st(C.grayLight);
-    doc.text(k.lbl, kx + kW / 2, curY + kpiH - 0.8, { align: "center" });
+    doc.setFont("helvetica", "bold"); doc.setFontSize(4.5); st(k.valC);
+    doc.text(k.val, kx + kW / 2, curY + 4.2, { align: "center" });
+    doc.setFont("helvetica", "normal"); doc.setFontSize(2.5); st(C.grayLight);
+    doc.text(k.lbl, kx + kW / 2, curY + kpiH - 0.7, { align: "center" });
   });
-  curY += kpiH + 1;
+  curY += kpiH + 0.8;
 
   // ── Attendance table ──────────────────────────────────────────────────────
   const STATUS_PDF: Record<string, { label: string; color: RGB; bg: RGB }> = {
@@ -405,14 +414,23 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
     COMPENSATION: { label: "COMPENS.", color: C.navy,     bg: [232, 240, 255] as RGB     },
   };
 
-  // Calculate dynamic row height — guaranteed single page
-  // BOTTOM_RESERVE: sig (5.5+32) + footer (6) + gaps = 45mm
-  const BOTTOM_RESERVE = 45;
-  const tableBoundary  = H - BOTTOM_RESERVE;          // 252mm — table must stop here
+  // Calculate dynamic row height — guaranteed single page.
+  // SAFETY_MM existe porque a altura real que o autoTable desenha por linha
+  // fica ~0.04mm acima do que a fórmula abaixo pede (padding/line-height
+  // interno da lib) — em 31 linhas isso acumula ~1.3mm, o suficiente pra
+  // empurrar a última linha pra uma 2ª página. Validado empiricamente
+  // (script de teste com jsPDF + autoTable rodando fora do browser,
+  // medindo data.cell.height real via didDrawCell) até page count = 1
+  // com folga de ~4mm mesmo no cenário mais pesado (31 dias, todos com
+  // múltiplas marcações e justificativa longa).
+  // BOTTOM_RESERVE: sig (4+20) + footer (6) + gaps = 32mm
+  const BOTTOM_RESERVE = 32;
+  const SAFETY_MM      = 5;
+  const tableBoundary  = H - BOTTOM_RESERVE;          // 178mm — table must stop here
   const tableAvailH    = tableBoundary - curY;         // available for header+body
   const headerRowH     = 5;
-  const rowH           = Math.max(3.5, Math.min(6.5, (tableAvailH - headerRowH) / Math.max(allDays.length, 1)));
-  const cellPadV       = Math.max(0.3, (rowH - 4.5 * 0.352) / 2 - 0.1);
+  const rowH           = Math.max(3.2, Math.min(6.5, (tableAvailH - headerRowH - SAFETY_MM) / Math.max(allDays.length, 1)));
+  const cellPadV       = Math.max(0.25, (rowH - 4.5 * 0.352) / 2 - 0.1);
 
   const tableRows: any[][] = allDays.map(dateStr => {
     const dow    = new Date(dateStr + "T12:00:00").getDay();
@@ -473,7 +491,7 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
 
   autoTable(doc, {
     startY: curY,
-    head: [["DATA", "DIA", "JORNADA", "MARCAÇÕES", "TRAB.", "H.E.", "A.NOT.", "DÉB.", "BCO/DIA", "STATUS", "JUSTIFICATIVA"]],
+    head: [["DATA", "DIA", "JORNADA", "MARCAÇÕES", "TRAB.", "H.E.", "A.NOT.", "DÉF.", "BCO/DIA", "STATUS", "JUSTIFICATIVA"]],
     body: tableRows,
     theme: "plain",
     styles: {
@@ -498,17 +516,17 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
     },
     alternateRowStyles: { fillColor: [249, 250, 252] as RGB },
     columnStyles: {
-      0:  { cellWidth: 14,  halign: "center" }, // DATA
-      1:  { cellWidth:  7,  halign: "center" }, // DIA
-      2:  { cellWidth: 17,  halign: "center" }, // JORNADA
-      3:  { cellWidth: 47,  halign: "left"   }, // MARCAÇÕES
-      4:  { cellWidth: 13,  halign: "center" }, // TRAB
-      5:  { cellWidth: 11,  halign: "center" }, // H.E.
-      6:  { cellWidth: 11,  halign: "center" }, // A.NOT.
-      7:  { cellWidth: 11,  halign: "center" }, // DÉB.
-      8:  { cellWidth: 13,  halign: "center" }, // BCO/DIA
-      9:  { cellWidth: 17,  halign: "center" }, // STATUS
-      10: { cellWidth: 33,  halign: "left"   }, // JUSTIFICATIVA → total 194
+      0:  { cellWidth: 16,  halign: "center" }, // DATA
+      1:  { cellWidth:  9,  halign: "center" }, // DIA
+      2:  { cellWidth: 20,  halign: "center" }, // JORNADA
+      3:  { cellWidth: 75,  halign: "left"   }, // MARCAÇÕES
+      4:  { cellWidth: 16,  halign: "center" }, // TRAB
+      5:  { cellWidth: 14,  halign: "center" }, // H.E.
+      6:  { cellWidth: 14,  halign: "center" }, // A.NOT.
+      7:  { cellWidth: 14,  halign: "center" }, // DÉF.
+      8:  { cellWidth: 16,  halign: "center" }, // BCO/DIA
+      9:  { cellWidth: 22,  halign: "center" }, // STATUS
+      10: { cellWidth: 61,  halign: "left"   }, // JUSTIFICATIVA → total 277
     },
     margin: { left: ML, right: W - MR, top: HEADER_H + 2, bottom: BOTTOM_RESERVE },
     tableLineColor: C.grayLine,
@@ -533,23 +551,23 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
     },
   });
 
-  // ── Signature section ─────────────────────────────────────────────────────
-  const sigAreaY = H - BOTTOM_RESERVE + 1;
+  // ── Signature section (compacto, cabe na mesma folha da tabela) ───────────
+  const sigAreaY = H - BOTTOM_RESERVE + 0.5;
   sd(C.grayLine); doc.setLineWidth(0.2);
   doc.line(ML, sigAreaY, MR, sigAreaY);
   sf(C.navy); doc.rect(ML, sigAreaY, 10, 0.35, "F");
 
-  doc.setFont("helvetica", "italic"); doc.setFontSize(3.8); st(C.grayText);
+  doc.setFont("helvetica", "italic"); doc.setFontSize(3.2); st(C.grayText);
   doc.text(
     `Declaro que as informações de frequência referentes à competência ${MONTHS[month - 1]}/${year} conferem com os registros do sistema.`,
-    ML, sigAreaY + 3
+    ML, sigAreaY + 2.4
   );
-  doc.setFont("helvetica", "normal"); doc.setFontSize(3.8); st(C.black);
-  doc.text(`São Paulo, _____ de ${MONTHS[month - 1]} de ${year}.`, MR, sigAreaY + 3, { align: "right" });
+  doc.setFont("helvetica", "normal"); doc.setFontSize(3.2); st(C.black);
+  doc.text(`São Paulo, _____ de ${MONTHS[month - 1]} de ${year}.`, MR, sigAreaY + 2.4, { align: "right" });
 
-  const sigH    = 32;
+  const sigH    = 20;
   const sbW     = (CW - 6) / 2;   // 2 boxes with 6mm gap
-  const sigBoxY = sigAreaY + 5.5;
+  const sigBoxY = sigAreaY + 3.6;
   const sigBoxes = [
     { title: "FUNCIONÁRIO",     name: emp.name, sub: emp.role_title || "Colaborador" },
     { title: "CHEFIA IMEDIATA", name: "",        sub: "Responsável Direto"            },
@@ -559,19 +577,19 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
     const bx = ML + i * (sbW + 6);
     sf(C.white); doc.rect(bx, sigBoxY, sbW, sigH, "F");
     sd(C.grayLine); doc.setLineWidth(0.2); doc.rect(bx, sigBoxY, sbW, sigH, "S");
-    sf(C.navy); doc.rect(bx, sigBoxY, sbW, 6, "F");
-    doc.setFont("helvetica", "bold"); doc.setFontSize(4.5); st(C.white);
-    doc.text(box.title, bx + sbW / 2, sigBoxY + 4.2, { align: "center" });
+    sf(C.navy); doc.rect(bx, sigBoxY, sbW, 4.2, "F");
+    doc.setFont("helvetica", "bold"); doc.setFontSize(3.8); st(C.white);
+    doc.text(box.title, bx + sbW / 2, sigBoxY + 3, { align: "center" });
     sd([190, 198, 212] as RGB); doc.setLineWidth(0.35);
-    doc.line(bx + 4, sigBoxY + sigH - 12, bx + sbW - 4, sigBoxY + sigH - 12);
-    doc.setFont("helvetica", "normal"); doc.setFontSize(3.2); st(C.grayLight);
-    doc.text("Assinatura / Carimbo", bx + sbW / 2, sigBoxY + sigH - 10, { align: "center" });
-    doc.setFont("helvetica", "bold"); doc.setFontSize(4.5); st(C.black);
+    doc.line(bx + 4, sigBoxY + sigH - 8, bx + sbW - 4, sigBoxY + sigH - 8);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(2.8); st(C.grayLight);
+    doc.text("Assinatura / Carimbo", bx + sbW / 2, sigBoxY + sigH - 6.3, { align: "center" });
+    doc.setFont("helvetica", "bold"); doc.setFontSize(3.8); st(C.black);
     const n = box.name ? (box.name.length > 34 ? box.name.substring(0, 32) + "…" : box.name) : "";
-    doc.text(n, bx + sbW / 2, sigBoxY + sigH - 5, { align: "center" });
+    doc.text(n, bx + sbW / 2, sigBoxY + sigH - 3.2, { align: "center" });
     if (box.sub) {
-      doc.setFont("helvetica", "normal"); doc.setFontSize(3.5); st(C.grayText);
-      doc.text(box.sub.substring(0, 42), bx + sbW / 2, sigBoxY + sigH - 1.5, { align: "center" });
+      doc.setFont("helvetica", "normal"); doc.setFontSize(3); st(C.grayText);
+      doc.text(box.sub.substring(0, 42), bx + sbW / 2, sigBoxY + sigH - 1, { align: "center" });
     }
   });
 
@@ -629,11 +647,14 @@ export default function TimeCard() {
   const [bankCutoff, setBankCutoff] = useState<{ year: number; month: number } | null>(null);
   // Accumulated bank delta for months BETWEEN the seed cutoff and current viewed month
   const [historicalBankDelta, setHistoricalBankDelta] = useState(0);
-  const [historicalPinDed,    setHistoricalPinDed]    = useState(0);
+  // Banco de horas do Projeto PIN para o funcionário/mês visualizado — mesma fonte
+  // de verdade da tela "Saldos Acumulados" (ver pinAccumFor). null = não é PIN
+  // ou ainda carregando.
+  const [pinAccumBank, setPinAccumBank] = useState<number | null>(null);
   // PIN monthly goals (minutes) — loaded from server, configurable by admin
   const [pinMonthGoals, setPinMonthGoals] = useState<Record<number, number>>({
     1: 2400, 2: 2400, 3: 2400, 4: 2880, 5: 2400,
-    6: 2880, 7: 2880, 8: 2400, 9: 2400, 10: 2400, 11: 2400, 12: 2400,
+    6: 2880, 7: 2880, 8: 2400, 9: 2400, 10: 2400, 11: 2880, 12: 2400,
   });
 
   // UI dropdowns
@@ -697,18 +718,20 @@ export default function TimeCard() {
 
   // Accumulate bank for every month between cutoff and current viewed month (exclusive)
   // This is what the old code missed — it only added the current month's delta.
+  // NOTE: only applies to non-PIN employees — Projeto PIN employees use `pinAccumBank`
+  // below, which shares the exact formula/source of truth used by "Saldos Acumulados".
   useEffect(() => {
     const cutoffYM = bankCutoff ? bankCutoff.year * 12 + bankCutoff.month : null;
     const viewedYM = year * 12 + month;
 
-    // Nothing to accumulate if no cutoff or we're at/before the first tracked month
-    if (!selectedEmpId || cutoffYM === null || viewedYM <= cutoffYM) {
+    const emp = employees.find(e => e.id === selectedEmpId);
+
+    // Nothing to accumulate if no cutoff, we're at/before the first tracked month,
+    // or this employee is on the Projeto PIN path instead.
+    if (!selectedEmpId || cutoffYM === null || viewedYM <= cutoffYM || emp?.pin_project) {
       setHistoricalBankDelta(0);
-      setHistoricalPinDed(0);
       return;
     }
-
-    const emp = employees.find(e => e.id === selectedEmpId);
     if (!emp) return;
 
     const expected = emp.schedules?.expected_work ?? 480;
@@ -724,7 +747,6 @@ export default function TimeCard() {
         const allRecs: AttRecord[] = d.records || [];
 
         let totalBankDelta = 0;
-        const monthExtras: Record<string, { ot: number; month: number }> = {};
 
         for (const rec of allRecs) {
           const dateStr = rec.date.substring(0, 10);
@@ -740,27 +762,29 @@ export default function TimeCard() {
             : { net: rec.total_work || 0, ot: rec.overtime50 || 0, deficit: rec.delay || 0 };
 
           totalBankDelta += calc.ot - calc.deficit;
-          const mk = `${ry}-${rm}`;
-          if (!monthExtras[mk]) monthExtras[mk] = { ot: 0, month: rm };
-          monthExtras[mk].ot += calc.ot;
-        }
-
-        // PIN deduction for banco de horas: always 40h (2400 min) per month.
-        // The variable monthly goals (2880 for Apr/Jun/Jul) are for bonus tracking only.
-        let pinDed = 0;
-        if (emp.pin_project) {
-          for (const { ot } of Object.values(monthExtras)) {
-            pinDed += Math.min(ot, 2400);
-          }
         }
 
         setHistoricalBankDelta(totalBankDelta);
-        setHistoricalPinDed(pinDed);
       })
-      .catch(() => { if (!cancelled) { setHistoricalBankDelta(0); setHistoricalPinDed(0); } });
+      .catch(() => { if (!cancelled) { setHistoricalBankDelta(0); } });
 
     return () => { cancelled = true; };
   }, [selectedEmpId, year, month, bankCutoff, employees]);
+
+  // Banco de horas do Projeto PIN — sempre lê da mesma fonte de verdade que a tela
+  // "Saldos Acumulados" (dados congelados Jan–Jul/2026 + auto-balances Ago/2026+).
+  useEffect(() => {
+    const emp = employees.find(e => e.id === selectedEmpId);
+    if (!emp?.pin_project) { setPinAccumBank(null); return; }
+
+    let cancelled = false;
+    (async () => {
+      const autoBalances = await fetchPinAutoBalances();
+      if (cancelled) return;
+      setPinAccumBank(pinAccumFor(emp.id, year, month, autoBalances));
+    })();
+    return () => { cancelled = true; };
+  }, [selectedEmpId, year, month, employees]);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -848,21 +872,24 @@ export default function TimeCard() {
     [employees]
   );
 
-  // Banco acumulado correto:
-  // seed (balanço até fim do mês anterior ao cutoff)
-  // + soma de banco de cada mês desde o cutoff até o mês anterior ao visualizado  (historicalBankDelta)
-  // + banco do mês atual (totals.bank)
-  // − dedução PIN de cada mês histórico (historicalPinDed)
-  // − dedução PIN do mês atual
+  // Banco acumulado:
+  // - Projeto PIN: sempre `pinAccumBank` (mesma fonte de verdade de "Saldos Acumulados",
+  //   já inclui meses sem nenhum apontamento como déficit cheio da meta).
+  // - Demais funcionários: seed + soma de banco de cada mês desde o cutoff até o mês
+  //   anterior ao visualizado (historicalBankDelta) + banco do mês atual (totals.bank).
   const viewedAfterCutoff = bankCutoff
     ? (year > bankCutoff.year || (year === bankCutoff.year && month >= bankCutoff.month))
     : true;
-  const currentMonthPinGoal = pinMonthGoals[month] ?? 2400; // for bonus progress display only
-  // For banco de horas, always deduct 40h (2400 min) — Decreto higher goals are for bonus tracking only
-  const currentPinDeduction = (selectedEmp?.pin_project && viewedAfterCutoff) ? Math.min(totals.extra, 2400) : 0;
-  const totalAccumulatedBank = viewedAfterCutoff
-    ? bankSeedTotal + historicalBankDelta + totals.bank - historicalPinDed - currentPinDeduction
-    : bankSeedTotal;
+  const totalAccumulatedBank = selectedEmp?.pin_project
+    ? (pinAccumBank ?? 0)
+    : viewedAfterCutoff
+      ? bankSeedTotal + historicalBankDelta + totals.bank
+      : bankSeedTotal;
+
+  // Meta de horas extras do mês — só existe pra quem tem cota do Projeto PIN
+  // (banco de horas sempre desconta 40h/mês, independente do mês de bônus).
+  const monthlyExtraGoal = selectedEmp?.pin_project ? PIN_BANK_GOAL : null;
+  const extraGoalPct = monthlyExtraGoal ? Math.round((totals.extra / monthlyExtraGoal) * 100) : null;
 
   /* ── PDF export ────────────────────────────────────────────────────────── */
   const [exportingPdf,   setExportingPdf]   = useState(false);
@@ -881,6 +908,14 @@ export default function TimeCard() {
     targetMonth: number,
     currentMonthRecs: AttRecord[],
   ): Promise<number> => {
+    // Projeto PIN: sempre a mesma fonte de verdade usada em "Saldos Acumulados" —
+    // dados congelados Jan–Jul/2026 ou auto-balances Ago/2026+ (nunca a fórmula
+    // per-attendance-record abaixo, que não se aplica a funcionários PIN).
+    if (emp.pin_project) {
+      const autoBalances = await fetchPinAutoBalances();
+      return pinAccumFor(emp.id, targetYear, targetMonth, autoBalances) ?? 0;
+    }
+
     const expected = emp.schedules?.expected_work ?? 480;
     const lunch    = emp.schedules?.lunch_minutes  ?? 60;
 
@@ -915,7 +950,6 @@ export default function TimeCard() {
 
     // Accumulate bank per month from cutoffYM to viewedYM (inclusive)
     let accumulated = seed;
-    const monthExtras: Record<string, number> = {};
 
     for (const rec of allMerged) {
       const dateStr = rec.date.substring(0, 10);
@@ -929,15 +963,6 @@ export default function TimeCard() {
         : { net: rec.total_work || 0, ot: rec.overtime50 || 0, deficit: rec.delay || 0 };
 
       accumulated += calc.ot - calc.deficit;
-      const mk = `${ry}-${rm}`;
-      monthExtras[mk] = (monthExtras[mk] || 0) + calc.ot;
-    }
-
-    // PIN deduction for banco de horas: always 40h (2400 min) — bonus goals are separate
-    if (emp.pin_project) {
-      for (const extras of Object.values(monthExtras)) {
-        accumulated -= Math.min(extras, 2400);
-      }
     }
 
     return accumulated;
@@ -1598,7 +1623,7 @@ export default function TimeCard() {
             <div className="flex items-center gap-6 flex-wrap">
               {[
                 { label: "Horas Trabalhadas", value: toHHMM(totals.work), icon: Clock, color: "text-blue-300", compare: expectedMonthly > 0 ? Math.round((totals.work / expectedMonthly) * 100) : null },
-                { label: "Horas Extras", value: toHHMM(totals.extra), icon: TrendingUp, color: "text-emerald-300", compare: null },
+                { label: "Horas Extras", value: toHHMM(totals.extra), icon: TrendingUp, color: "text-emerald-300", compare: extraGoalPct },
                 { label: "Banco de Horas", value: (totalAccumulatedBank >= 0 ? "+" : "") + toHHMM(totalAccumulatedBank), icon: BarChart3, color: totalAccumulatedBank >= 0 ? "text-indigo-300" : "text-red-300", compare: null },
                 { label: "Faltas", value: String(totals.absences), icon: AlertCircle, color: "text-red-300", compare: null },
               ].map((s, i) => (
@@ -1626,30 +1651,38 @@ export default function TimeCard() {
           {
             label: "Horas Trabalhadas", value: toHHMM(totals.work),
             icon: Clock, color: "text-blue-600", bg: "bg-blue-50 border-blue-100",
+            valueColor: undefined as string | undefined,
             sub: `de ${toHHMM(expectedMonthly)} previstas`, trend: "neutral" as const,
           },
           {
             label: "Horas Extras", value: toHHMM(totals.extra),
             icon: TrendingUp, color: "text-emerald-600", bg: "bg-emerald-50 border-emerald-100",
-            sub: "acumuladas no mês", trend: totals.extra > 0 ? "up" as const : "neutral" as const,
+            valueColor: undefined as string | undefined,
+            sub: monthlyExtraGoal !== null
+              ? `meta ${toHHMM(monthlyExtraGoal)} · ${extraGoalPct}% cumprido`
+              : "acumuladas no mês",
+            trend: totals.extra > 0 ? "up" as const : "neutral" as const,
           },
           {
             label: "Banco de Horas",
             value: (totalAccumulatedBank >= 0 ? "+" : "") + toHHMM(totalAccumulatedBank),
             icon: BarChart3,
             color: totalAccumulatedBank >= 0 ? "text-indigo-600" : "text-red-600",
+            valueColor: totalAccumulatedBank >= 0 ? undefined : "text-red-600",
             bg: totalAccumulatedBank >= 0 ? "bg-indigo-50 border-indigo-100" : "bg-red-50 border-red-100",
-            sub: totalAccumulatedBank >= 0 ? "saldo acumulado" : "déficit a compensar",
+            sub: "saldo atual acumulado",
             trend: totalAccumulatedBank >= 0 ? "up" as const : "down" as const,
           },
           {
             label: "Déficit", value: toHHMM(totals.delay),
-            icon: AlertTriangle, color: "text-amber-600", bg: "bg-amber-50 border-amber-100",
+            icon: AlertTriangle, color: "text-red-600", bg: "bg-red-50 border-red-100",
+            valueColor: totals.delay > 0 ? "text-red-600" : undefined,
             sub: "horas a compensar", trend: totals.delay > 0 ? "down" as const : "neutral" as const,
           },
           {
             label: "Faltas", value: String(totals.absences),
             icon: AlertCircle, color: "text-red-600", bg: "bg-red-50 border-red-100",
+            valueColor: totals.absences > 0 ? "text-red-600" : undefined,
             sub: totals.absences === 1 ? "dia" : "dias no mês", trend: totals.absences > 0 ? "down" as const : "neutral" as const,
           },
         ].map((k, i) => (
@@ -1666,7 +1699,7 @@ export default function TimeCard() {
                   )}
                 </div>
                 <div className="mt-4">
-                  <div className="text-2xl font-bold tracking-tight font-mono">{k.value}</div>
+                  <div className={cn("text-2xl font-bold tracking-tight font-mono", k.valueColor)}>{k.value}</div>
                   <div className="text-sm font-semibold text-foreground mt-0.5">{k.label}</div>
                   <div className="text-xs text-muted-foreground">{k.sub}</div>
                 </div>

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useDropzone } from 'react-dropzone';
 import { useAppStore } from '@/src/lib/store';
@@ -23,12 +23,28 @@ type ParsedEmployee = {
   registration: string;
 };
 
+type UploadHistoryItem = {
+  updatedAt: string;
+  employeeCount: number;
+  recordCount: number;
+};
+
 export default function Upload() {
   const { setLastUpload } = useAppStore();
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [currentStep, setCurrentStep] = useState('');
   const [result, setResult] = useState<{ employees: ParsedEmployee[] } | null>(null);
+  const [history, setHistory] = useState<UploadHistoryItem[]>([]);
+
+  const loadHistory = useCallback(() => {
+    fetch('/api/upload/ponto/history')
+      .then(r => r.json())
+      .then(d => { if (d.success) setHistory(d.history || []); })
+      .catch(() => { /* silent — history is informational only */ });
+  }, []);
+
+  useEffect(() => { loadHistory(); }, [loadHistory]);
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
@@ -81,9 +97,10 @@ export default function Upload() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ employees }),
-          }).catch((error) => {
-            console.warn('Failed to save parsed data to server', error);
-          });
+          }).then(() => loadHistory())
+            .catch((error) => {
+              console.warn('Failed to save parsed data to server', error);
+            });
         }, 800);
       } catch (error: any) {
         console.error(error);
@@ -93,7 +110,7 @@ export default function Upload() {
     };
 
     reader.readAsDataURL(file);
-  }, []);
+  }, [loadHistory]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -216,12 +233,21 @@ export default function Upload() {
 
           <Card className="rounded-[32px] border border-border shadow-sm bg-primary/5 p-6 space-y-4">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Resumo Recente</span>
+              <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Importações Recentes</span>
               <FileText className="w-4 h-4 text-primary" />
             </div>
             <div className="space-y-2">
-              <RecentUploadItem name="Junho_2026.pdf" date="Ontem" />
-              <RecentUploadItem name="Maio_2026.pdf" date="03/05/2026" />
+              {history.length === 0 ? (
+                <p className="text-xs text-muted-foreground">Nenhuma importação registrada ainda.</p>
+              ) : (
+                history.map(h => (
+                  <RecentUploadItem
+                    key={h.updatedAt}
+                    name={`${h.employeeCount} colaborador${h.employeeCount === 1 ? "" : "es"}`}
+                    date={formatUploadDate(h.updatedAt)}
+                  />
+                ))
+              )}
             </div>
           </Card>
         </div>
@@ -251,6 +277,13 @@ export default function Upload() {
       )}
     </motion.div>
   );
+}
+
+function formatUploadDate(isoMinute: string): string {
+  // isoMinute is "YYYY-MM-DDTHH:mm" (UTC, truncated) — display as local pt-BR date/time
+  const d = new Date(isoMinute + ":00Z");
+  if (isNaN(d.getTime())) return isoMinute;
+  return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function RecentUploadItem({ name, date }: { name: string; date: string }) {

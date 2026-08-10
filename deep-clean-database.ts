@@ -121,8 +121,19 @@ async function verifyCleanDatabase() {
   }
 }
 
-// Run cleanup
+// Run cleanup — GUARDED: apaga TODOS os funcionários, apontamentos, banco de
+// horas, usuários e departamentos/horários customizados. Não há confirmação
+// interativa por padrão (rodado via `npm run clean-all`), então exigimos que
+// quem chamar o comando saiba exatamente o que está fazendo: informe o ref
+// do projeto Supabase (extraído da própria VITE_SUPABASE_URL) na variável
+// CONFIRM_WIPE_PROJECT_REF antes de rodar.
 (async () => {
+  const projectRef = new URL(supabaseUrl).hostname.split(".")[0];
+  if (process.env.CONFIRM_WIPE_PROJECT_REF !== projectRef) {
+    console.error(`\n🛑 BLOQUEADO: este script apaga TODOS os funcionários, apontamentos, banco de horas e usuários do banco "${projectRef}".`);
+    console.error(`Se é isso mesmo que você quer, rode de novo com:\n  CONFIRM_WIPE_PROJECT_REF=${projectRef} npm run clean-all\n`);
+    process.exit(1);
+  }
   try {
     await cleanAllFictitionsData();
     await verifyCleanDatabase();

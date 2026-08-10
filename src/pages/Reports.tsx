@@ -28,6 +28,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { fetchPinAutoBalances, pinAccumFor } from "@/src/lib/pinHistoricalData";
 
 /* ── Types ─────────────────────────────────────────────────────────────────── */
 type Summary = {
@@ -194,9 +195,29 @@ export default function Reports() {
       for (const r of (absRecords ?? [])) {
         absByEmp[r.employee_id] = (absByEmp[r.employee_id] ?? 0) + 1;
       }
+      // Projeto PIN: banco de horas vem da mesma fonte de verdade de "Saldos
+      // Acumulados" (/api/pin-project/auto-balances) — buscado uma única vez
+      // para todos os funcionários.
+      const pinAutoBalances = await fetchPinAutoBalances();
       const reports: EmpReport[] = await Promise.all(
         (employees ?? []).map(async (emp: any) => {
           try {
+            if (emp.pin_project) {
+              const attRes = await fetch(`/api/attendance/${emp.id}?year=${year}&month=${month}`);
+              const attData = await attRes.json();
+              const records: any[] = attData.records ?? [];
+              const totalWork = records.reduce((s: number, r: any) => s + (r.total_work ?? 0), 0);
+              const overtime = records.reduce((s: number, r: any) => s + (r.overtime50 ?? 0) + (r.overtime100 ?? 0), 0);
+              const delays = records.reduce((s: number, r: any) => s + (r.delay ?? 0), 0);
+              const accBank = pinAccumFor(emp.id, year, month, pinAutoBalances) ?? 0;
+              return {
+                id: emp.id, name: emp.name, registration: emp.registration ?? "—",
+                role_title: emp.role_title, departments: emp.departments,
+                totalWork, overtime, delays, absences: absByEmp[emp.id] ?? 0,
+                accBank, pin_project: emp.pin_project,
+              };
+            }
+
             const [attRes, bankRes] = await Promise.all([
               fetch(`/api/attendance/${emp.id}?year=${year}&month=${month}`),
               fetch(`/api/time-bank/${emp.id}`),
@@ -216,7 +237,7 @@ export default function Reports() {
             }
             const bankNet = overtime - delays;
             const afterCutoff = !bankCutoff || (year > bankCutoff.year || (year === bankCutoff.year && month >= bankCutoff.month));
-            const accBank = (afterCutoff ? seedTotal + bankNet : seedTotal) - (emp.pin_project ? 2400 : 0);
+            const accBank = afterCutoff ? seedTotal + bankNet : seedTotal;
             return {
               id: emp.id, name: emp.name, registration: emp.registration ?? "—",
               role_title: emp.role_title, departments: emp.departments,
@@ -299,6 +320,100 @@ export default function Reports() {
     a.href = url; a.download = `relatorio-${year}-${String(month).padStart(2,"0")}.csv`;
     a.click(); URL.revokeObjectURL(url);
     toast.success("CSV exportado!");
+  };
+
+  /* Exporta o relatório aberto no drawer como PDF com timbre oficial (mesmo
+     padrão visual dos relatórios de Faltas/PIN) — usa os dados já carregados
+     (resumo do período + ocorrências), rotulado com o título do catálogo. */
+  const exportDrawerReportPdf = (report: ReportDef) => {
+    if (!summary) { toast.error("Aguarde o carregamento dos dados do período."); return; }
+    const monthLabel = MONTHS[month - 1];
+    const genDate = new Date().toLocaleString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const absRows = absences.map((r, i) => `
+      <tr class="${i % 2 === 1 ? 'alt' : ''}">
+        <td class="num">${i + 1}</td>
+        <td class="name">${r.employees?.name ?? '—'}</td>
+        <td>${r.employees?.registration ?? '—'}</td>
+        <td>${fmtDate(r.date)}</td>
+        <td><span class="badge badge-${r.status}">${STATUS_META[r.status]?.label ?? r.status}</span></td>
+        <td>${r.justification ?? '—'}</td>
+      </tr>`).join('');
+    const win = window.open('', '_blank');
+    if (!win) { toast.error('Popup bloqueado. Libere popups para imprimir.'); return; }
+    win.document.write(`<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8"/>
+<title>${report.title} — ${monthLabel} ${year}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Inter',Arial,sans-serif;color:#111827;background:#fff;font-size:11px;padding:28mm 18mm 20mm}
+  .lh{display:flex;align-items:center;justify-content:space-between;padding-bottom:14px;border-bottom:3px solid #0f2044;margin-bottom:16px}
+  .lh .logo-crop{width:55px;height:64px;overflow:hidden;position:relative;display:inline-block}
+  .lh .logo-crop img{height:64px;width:auto;position:absolute;left:0;top:0}
+  .lh .org h1{font-size:14px;font-weight:800;color:#0f2044}
+  .lh .org p{font-size:10px;color:#6b7280;margin-top:2px}
+  .lh .ref{text-align:right;font-size:10px;color:#6b7280}
+  .lh .ref strong{display:block;font-size:12px;color:#0f2044;font-weight:800}
+  .title-row{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:6px}
+  .title-row h2{font-size:20px;font-weight:800;color:#0f2044}
+  .title-row .period{background:#0f2044;color:#fff;font-size:10px;font-weight:700;padding:5px 14px;border-radius:20px;text-transform:capitalize}
+  .subtitle{font-size:10.5px;color:#6b7280;margin-bottom:14px}
+  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+  .card{border:1.5px solid #e5e7eb;border-radius:10px;padding:10px 14px}
+  .card .cl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#9ca3af}
+  .card .cv{font-size:18px;font-weight:800;color:#111827;margin-top:2px}
+  .card.blue{border-color:#bfdbfe;background:#eff6ff} .card.blue .cv{color:#1d4ed8}
+  .card.red{border-color:#fecaca;background:#fef2f2}  .card.red .cv{color:#dc2626}
+  .card.green{border-color:#bbf7d0;background:#f0fdf4}.card.green .cv{color:#15803d}
+  .card.amber{border-color:#fde68a;background:#fffbeb}.card.amber .cv{color:#b45309}
+  .sec{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#6b7280;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #e5e7eb}
+  table{width:100%;border-collapse:collapse;font-size:10.5px}
+  thead tr{background:#0f2044}
+  thead th{color:#fff;padding:8px 10px;text-align:left;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;white-space:nowrap}
+  tbody tr{border-bottom:1px solid #f3f4f6}
+  tbody tr.alt td{background:#f9fafb}
+  td{padding:7px 10px;vertical-align:middle}
+  td.num{color:#9ca3af;font-size:9px;width:24px}
+  td.name{font-weight:600;color:#111827}
+  .badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+  .badge-ABSENT,.badge-ABSENCE{background:#fef2f2;color:#dc2626;border:1px solid #fecaca}
+  .badge-CERTIFICATE,.badge-MEDICAL{background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe}
+  .badge-JUSTIFIED{background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0}
+  .sig{margin-top:36px;display:grid;grid-template-columns:1fr 1fr;gap:40px}
+  .sig .sl{font-size:9px;color:#9ca3af;margin-bottom:28px}
+  .sig .sline{border-top:1.5px solid #374151;margin-bottom:5px}
+  .sig .sn{font-size:10px;font-weight:700;color:#111827}
+  .sig .sr{font-size:9px;color:#6b7280}
+  .footer{margin-top:20px;display:flex;justify-content:space-between;padding-top:10px;border-top:1px solid #e5e7eb;font-size:9px;color:#9ca3af}
+  @media print{@page{size:A4 portrait;margin:14mm 12mm}body{-webkit-print-color-adjust:exact;print-color-adjust:exact}thead{display:table-header-group}tr{page-break-inside:avoid}}
+</style></head><body>
+  <div class="lh">
+    <div style="display:flex;align-items:center;gap:16px">
+      <div class="logo-crop"><img src="/img/Bras%C3%A3o.png" alt="Logo"/></div>
+      <div class="org"><h1>Coordenadoria de Gestão Orçamentária e Financeira</h1><p>Secretaria de Estado da Saúde de São Paulo — CGOF</p><p>${report.category}</p></div>
+    </div>
+    <div class="ref"><strong>REL-${report.id.toUpperCase()}-${year}${String(month).padStart(2,'0')}</strong><div>Gerado: ${genDate}</div></div>
+  </div>
+  <div class="title-row"><h2>${report.title}</h2><div class="period">${monthLabel} ${year}</div></div>
+  <div class="subtitle">${report.description}</div>
+  <div class="cards">
+    <div class="card blue"><div class="cl">Funcionários Ativos</div><div class="cv">${summary.activeEmployees}</div></div>
+    <div class="card red"><div class="cl">Total Faltas</div><div class="cv">${summary.absences}</div></div>
+    <div class="card green"><div class="cl">Horas Extras</div><div class="cv">${toHHMM(summary.totalOvertimeMinutes)}</div></div>
+    <div class="card amber"><div class="cl">Atrasos</div><div class="cv">${toHHMM(summary.totalDelayMinutes)}</div></div>
+  </div>
+  <div class="sec">Detalhamento de Ocorrências do Período</div>
+  <table><thead><tr><th>#</th><th>Funcionário</th><th>Matrícula</th><th>Data</th><th>Tipo</th><th>Justificativa</th></tr></thead>
+  <tbody>${absRows || '<tr><td colspan="6" style="text-align:center;padding:20px;color:#9ca3af">Nenhuma ocorrência no período</td></tr>'}</tbody></table>
+  <div class="sig">
+    <div><div class="sl">Responsável pela elaboração</div><div class="sline"></div><div class="sn">_______________________________</div><div class="sr">Nome / Matrícula — CGOF</div></div>
+    <div><div class="sl">Visto da Chefia Imediata</div><div class="sline"></div><div class="sn">_______________________________</div><div class="sr">Coordenador(a) CGOF</div></div>
+  </div>
+  <div class="footer"><span>CGOF — Coordenadoria de Gestão Orçamentária e Financeira</span><span>Período: ${monthLabel} ${year} | ${report.title}</span></div>
+<script>window.onload=function(){window.print()}<\/script>
+</body></html>`);
+    win.document.close();
+    toast.success("PDF gerado!");
   };
 
   /* ── KPI data ─────────────────────────────────────────────────────────── */
@@ -423,7 +538,8 @@ export default function Reports() {
   *{margin:0;padding:0;box-sizing:border-box}
   body{font-family:'Inter',Arial,sans-serif;color:#111827;background:#fff;font-size:11px;padding:28mm 18mm 20mm}
   .lh{display:flex;align-items:center;justify-content:space-between;padding-bottom:14px;border-bottom:3px solid #0f2044;margin-bottom:16px}
-  .lh img{height:64px;object-fit:contain}
+  .lh .logo-crop{width:55px;height:64px;overflow:hidden;position:relative;display:inline-block}
+  .lh .logo-crop img{height:64px;width:auto;position:absolute;left:0;top:0}
   .lh .org h1{font-size:14px;font-weight:800;color:#0f2044}
   .lh .org p{font-size:10px;color:#6b7280;margin-top:2px}
   .lh .ref{text-align:right;font-size:10px;color:#6b7280}
@@ -462,7 +578,7 @@ export default function Reports() {
 </style></head><body>
   <div class="lh">
     <div style="display:flex;align-items:center;gap:16px">
-      <img src="/img/logo.png" alt="Logo"/>
+      <div class="logo-crop"><img src="/img/Bras%C3%A3o.png" alt="Logo"/></div>
       <div class="org"><h1>Coordenadoria de Gestão Orçamentária e Financeira</h1><p>Secretaria de Estado da Saúde de São Paulo — CGOF</p><p>Relatório de Controle de Frequência</p></div>
     </div>
     <div class="ref"><strong>REL-FALTAS-${year}${String(month).padStart(2,'0')}</strong><div>Gerado: ${genDate}</div></div>
@@ -1105,7 +1221,8 @@ export default function Reports() {
     /* ── Letterhead ── */
     .letterhead { display:flex; align-items:center; justify-content:space-between; padding-bottom:14px; border-bottom:3px solid #0f2044; margin-bottom:6px; }
     .letterhead-logo { display:flex; align-items:center; gap:16px; }
-    .letterhead-logo img { height:72px; object-fit:contain; }
+    .letterhead-logo .logo-crop { width:62px; height:72px; overflow:hidden; position:relative; display:inline-block; }
+    .letterhead-logo .logo-crop img { height:72px; width:auto; position:absolute; left:0; top:0; }
     .org-info h1 { font-size:14px; font-weight:800; color:#0f2044; letter-spacing:-.3px; }
     .org-info p  { font-size:10px; color:#6b7280; margin-top:2px; }
     .doc-ref { text-align:right; }
@@ -1176,7 +1293,7 @@ export default function Reports() {
   <!-- Letterhead -->
   <div class="letterhead">
     <div class="letterhead-logo">
-      <img src="/img/logo.png" alt="Logo CGOF" />
+      <div class="logo-crop"><img src="/img/Bras%C3%A3o.png" alt="Logo CGOF" /></div>
       <div class="org-info">
         <h1>Centro de Gestão de Operações e Finanças</h1>
         <p>Secretaria de Estado da Saúde de São Paulo — CGOF</p>
@@ -1478,7 +1595,7 @@ export default function Reports() {
                   <ChevR className="w-4 h-4 text-muted-foreground/40 group-hover:text-muted-foreground ml-auto transition-colors" />
                 </button>
                 <button
-                  onClick={() => toast.info("Exportação PDF disponível em breve")}
+                  onClick={() => exportDrawerReportPdf(drawerReport)}
                   className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl border border-border bg-card hover:bg-muted/30 transition-colors text-left group"
                 >
                   <div className="w-9 h-9 rounded-xl bg-red-50 border border-red-100 flex items-center justify-center shrink-0">
@@ -1486,9 +1603,9 @@ export default function Reports() {
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-foreground">Exportar PDF</p>
-                    <p className="text-[11px] text-muted-foreground">Relatório formatado</p>
+                    <p className="text-[11px] text-muted-foreground">Relatório formatado com timbre oficial</p>
                   </div>
-                  <Badge className="ml-auto bg-muted text-muted-foreground border-border rounded-full text-[9px] px-1.5 shrink-0">Em breve</Badge>
+                  <ChevR className="w-4 h-4 text-muted-foreground/40 group-hover:text-muted-foreground ml-auto transition-colors" />
                 </button>
               </div>
 

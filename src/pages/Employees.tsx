@@ -2,6 +2,7 @@
    ChronosAI — Funcionários  |  Enterprise SaaS Grade UI
    ═══════════════════════════════════════════════════════════════════════════ */
 import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Search, UserPlus, MoreHorizontal, Mail, Phone, Building2,
@@ -90,6 +91,7 @@ const avatarColor = (id: string) =>
    Main Component
 ══════════════════════════════════════════════════════════════════════════════ */
 export default function Employees() {
+  const navigate = useNavigate();
   /* ── State ─────────────────────────────────────────────────────────────── */
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [departments, setDepartments] = useState<Dept[]>([]);
@@ -170,8 +172,12 @@ export default function Employees() {
     setEditTarget(emp);
     setEditForm({ ...emp, admission_date: emp.admission_date?.substring(0, 10) ?? "" });
     setEditTab(tab);
-    setBankEntries([]); setBankTotal(0); setBankLoading(true); setBankComputedTotal(null);
+    setBankEntries([]); setBankTotal(0); setBankLoading(false); setBankComputedTotal(null);
     setBankPinSeedPresent(false);
+    // Funcionários do Projeto PIN não usam este lançamento manual — o banco de
+    // horas deles é gerenciado só em Saldos Acumulados (ver aviso na aba "bank").
+    if (emp.pin_project) return;
+    setBankLoading(true);
     try {
       const now = new Date();
       const cy = now.getFullYear(), cm = now.getMonth() + 1;
@@ -1268,7 +1274,20 @@ export default function Employees() {
               )}
 
               {/* ── BANK TAB ──────────────────────────────────────────────── */}
-              {editTab === "bank" && (
+              {editTab === "bank" && editTarget?.pin_project && (
+                <div className="rounded-2xl border-2 border-blue-200 bg-blue-50 p-6 text-center space-y-3">
+                  <TrendingUp className="w-8 h-8 text-blue-600 mx-auto" />
+                  <p className="text-sm font-bold text-blue-900">Este funcionário participa do Projeto PIN</p>
+                  <p className="text-xs text-blue-700 max-w-sm mx-auto">
+                    O banco de horas do Projeto PIN é gerenciado exclusivamente na tela "Saldos Acumulados",
+                    onde qualquer mês pode ser corrigido. Lançamentos manuais feitos aqui não teriam efeito.
+                  </p>
+                  <Button size="sm" className="rounded-xl gap-2 bg-blue-600 hover:bg-blue-700 text-white" onClick={() => navigate("/pin")}>
+                    <TrendingUp className="w-3.5 h-3.5" /> Abrir Saldos Acumulados
+                  </Button>
+                </div>
+              )}
+              {editTab === "bank" && !editTarget?.pin_project && (
                 <div className="space-y-5">
                   {/* Real accumulated balance card */}
                   <div className={cn(
