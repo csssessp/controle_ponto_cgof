@@ -30,7 +30,7 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  sidebarOpen: true,
+  sidebarOpen: false,
   toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
   currentOrganization: null,
   setCurrentOrganization: (id) => set({ currentOrganization: id }),

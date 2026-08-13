@@ -23,7 +23,7 @@ export const isSupabaseReady = () => {
     return !!(url && key);
 };
 
-export type UserRole = 'ADMIN' | 'RH' | 'MANAGER' | 'EMPLOYEE';
+export type UserRole = 'ADMIN' | 'AUDITOR' | 'VIEWER';
 
 export interface Profile {
   id: string;
@@ -31,4 +31,5 @@ export interface Profile {
   role: UserRole;
   organization_id: string;
   employee_id?: string;
+  must_change_password?: boolean;
 }

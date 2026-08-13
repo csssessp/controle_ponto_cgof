@@ -24,11 +24,12 @@ export default function Login() {
 
       const user = data.user;
       setProfile({
-        id:              user.id,
-        email:           user.email ?? email,
-        role:            (user.app_metadata?.system_role ?? user.app_metadata?.role ?? user.user_metadata?.role ?? "VIEWER") as any,
-        organization_id: user.app_metadata?.organization_id ?? "",
-        employee_id:     user.app_metadata?.employee_id,
+        id:                  user.id,
+        email:               user.email ?? email,
+        role:                (user.app_metadata?.system_role ?? user.app_metadata?.role ?? user.user_metadata?.role ?? "VIEWER") as any,
+        organization_id:     user.app_metadata?.organization_id ?? "",
+        employee_id:         user.app_metadata?.employee_id,
+        must_change_password: !!user.user_metadata?.must_change_password,
       });
       navigate("/dashboard", { replace: true });
     } catch (err: any) {

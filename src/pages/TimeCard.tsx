@@ -24,6 +24,7 @@ import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { fetchPinAutoBalances, pinAccumFor, PIN_BANK_GOAL } from "@/src/lib/pinHistoricalData";
+import { useAuthStore } from "@/src/lib/store";
 
 /* ── Types ─────────────────────────────────────────────────────────────────── */
 type TimeEntry = { time: string; type: "IN" | "OUT" };
@@ -614,6 +615,16 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
    Main Component
 ══════════════════════════════════════════════════════════════════════════════ */
 export default function TimeCard() {
+  const { profile } = useAuthStore();
+  // Conta de acesso automático (funcionário → VIEWER vinculado ao próprio
+  // employee_id): só pode ver o próprio espelho, sem trocar de funcionário,
+  // sem navegar além do último mês importado no sistema.
+  const selfServiceViewer = profile?.role === 'VIEWER' && !!profile?.employee_id;
+  // Qualquer VIEWER (inclusive contas genéricas sem employee_id) é somente
+  // leitura — o backend já rejeita escrita, então nem mostramos os controles.
+  const canEdit = profile?.role !== 'VIEWER';
+  const [maxViewableMonth, setMaxViewableMonth] = useState<{ year: number; month: number } | null>(null);
+
   const now = new Date();
   const [year,  setYear]  = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
@@ -661,7 +672,7 @@ export default function TimeCard() {
   const [empSearch,      setEmpSearch]      = useState("");
   const [empDropOpen,    setEmpDropOpen]    = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
-  const [pageView,    setPageView]    = useState<"list" | "detail">("list");
+  const [pageView,    setPageView]    = useState<"list" | "detail">(selfServiceViewer ? "detail" : "list");
   const [listSearch,  setListSearch]  = useState("");
   const [listSetor,   setListSetor]   = useState("all");
   const [listJornada, setListJornada] = useState("all");
@@ -671,13 +682,36 @@ export default function TimeCard() {
 
   /* ── Data ──────────────────────────────────────────────────────────────── */
   useEffect(() => {
-    fetch("/api/employees")
-      .then(r => r.json())
-      .then(d => {
-        setEmployees(d.employees || []);
-        if (d.employees?.length && !selectedEmpId) setSelectedEmpId(d.employees[0].id);
-      })
-      .catch(() => toast.error("Erro ao carregar funcionários"));
+    if (selfServiceViewer && profile?.employee_id) {
+      // Escopo travado: só o próprio registro, nunca a lista completa
+      // (o backend também rejeitaria GET /api/employees para esta conta).
+      fetch(`/api/employees/${profile.employee_id}`)
+        .then(r => r.json())
+        .then(d => {
+          if (d.employee) { setEmployees([d.employee]); setSelectedEmpId(d.employee.id); }
+        })
+        .catch(() => toast.error("Erro ao carregar seus dados"));
+      // Saldo/espelho só pode ser visto até o último mês com apontamento
+      // importado no sistema — nunca meses futuros ainda vazios.
+      fetch("/api/system/last-imported-month")
+        .then(r => r.json())
+        .then(d => {
+          if (d.success) {
+            setMaxViewableMonth({ year: d.year, month: d.month });
+            setYear(d.year);
+            setMonth(d.month);
+          }
+        })
+        .catch(() => {});
+    } else {
+      fetch("/api/employees")
+        .then(r => r.json())
+        .then(d => {
+          setEmployees(d.employees || []);
+          if (d.employees?.length && !selectedEmpId) setSelectedEmpId(d.employees[0].id);
+        })
+        .catch(() => toast.error("Erro ao carregar funcionários"));
+    }
     // Load PIN goals config
     fetch("/api/pin-project/goals")
       .then(r => r.json())
@@ -1256,6 +1290,10 @@ export default function TimeCard() {
 
   const prevMonth = () => { if (month === 1) { setYear(y => y - 1); setMonth(12); } else setMonth(m => m - 1); };
   const nextMonth = () => { if (month === 12) { setYear(y => y + 1); setMonth(1); } else setMonth(m => m + 1); };
+  // Contas de funcionário nunca podem navegar além do último mês importado —
+  // evita mostrar um mês futuro "vazio" como se o saldo já estivesse zerado.
+  const atMaxViewableMonth = !!(selfServiceViewer && maxViewableMonth &&
+    (year > maxViewableMonth.year || (year === maxViewableMonth.year && month >= maxViewableMonth.month)));
   const today = new Date().toISOString().split("T")[0];
 
   /* ─────────────────────────────────────────────────────────────────────────
@@ -1327,26 +1365,29 @@ export default function TimeCard() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Page view toggle */}
-          <div className="flex bg-muted/60 rounded-xl p-1 gap-0.5 border border-border/50">
-            <button
-              onClick={() => setPageView("list")}
-              className={cn("px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1",
-                pageView === "list" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <LayoutGrid className="w-3 h-3" /> Lista
-            </button>
-            <button
-              onClick={() => setPageView("detail")}
-              className={cn("px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1",
-                pageView === "detail" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <FileText className="w-3 h-3" /> Espelho
-            </button>
-          </div>
-          {/* Employee selector — searchable custom dropdown */}
+          {/* Page view toggle — funcionários (self-service) só têm o Espelho, sem Lista */}
+          {!selfServiceViewer && (
+            <div className="flex bg-muted/60 rounded-xl p-1 gap-0.5 border border-border/50">
+              <button
+                onClick={() => setPageView("list")}
+                className={cn("px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1",
+                  pageView === "list" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <LayoutGrid className="w-3 h-3" /> Lista
+              </button>
+              <button
+                onClick={() => setPageView("detail")}
+                className={cn("px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1",
+                  pageView === "detail" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <FileText className="w-3 h-3" /> Espelho
+              </button>
+            </div>
+          )}
+          {/* Employee selector — searchable custom dropdown (oculto para contas de funcionário) */}
+          {!selfServiceViewer && (
           <div className="relative" ref={empSelectorRef}>
             <button
               onClick={() => setEmpDropOpen(v => !v)}
@@ -1394,6 +1435,7 @@ export default function TimeCard() {
               </div>
             )}
           </div>
+          )}
 
           {/* Month nav */}
           <div className="flex items-center bg-card rounded-2xl border border-border/70 p-1 shadow-sm">
@@ -1404,7 +1446,7 @@ export default function TimeCard() {
               <CalendarDays className="w-3.5 h-3.5 text-primary" />
               {MONTHS[month - 1]} {year}
             </div>
-            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-xl" onClick={nextMonth}>
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-xl" onClick={nextMonth} disabled={atMaxViewableMonth} title={atMaxViewableMonth ? "Sem apontamento importado além deste mês" : undefined}>
               <ChevronRight className="w-4 h-4" />
             </Button>
           </div>
@@ -1586,60 +1628,36 @@ export default function TimeCard() {
           <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: "radial-gradient(circle at 20% 50%, white 1px, transparent 1px), radial-gradient(circle at 80% 20%, white 1px, transparent 1px)", backgroundSize: "40px 40px" }} />
           <div className="absolute right-0 top-0 bottom-0 w-64 bg-gradient-to-l from-primary/20 to-transparent" />
 
-          <div className="relative flex items-center justify-between gap-6 flex-wrap">
-            {/* Employee info */}
-            <div className="flex items-center gap-4">
-              <div className={cn(
-                "w-14 h-14 rounded-3xl flex items-center justify-center text-white font-bold text-lg shadow-xl bg-gradient-to-br",
-                avatarColor(selectedEmp.id)
-              )}>
-                {ini(selectedEmp.name)}
-              </div>
-              <div>
-                <h2 className="text-xl font-bold leading-tight">{selectedEmp.name}</h2>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="text-xs text-slate-300 font-mono">#{selectedEmp.registration}</span>
-                  {selectedEmp.departments && (
-                    <span className="text-xs bg-white/10 px-2 py-0.5 rounded-full text-slate-200">
-                      {selectedEmp.departments.name}
-                    </span>
-                  )}
-                  {selectedEmp.schedules && (
-                    <span className="text-xs bg-white/10 px-2 py-0.5 rounded-full text-slate-200 flex items-center gap-1">
-                      <Clock className="w-3 h-3" />
-                      {selectedEmp.schedules.name}
-                    </span>
-                  )}
-                  {selectedEmp.pin_project && (
-                    <span className="text-xs bg-indigo-400/30 border border-indigo-300/40 px-2 py-0.5 rounded-full text-indigo-100 flex items-center gap-1 font-bold">
-                      PIN
-                    </span>
-                  )}
-                </div>
-              </div>
+          {/* Employee info — os números de horas/banco/faltas ficam só nos cards
+              abaixo (KPI cards), pra não repetir os mesmos dados duas vezes. */}
+          <div className="relative flex items-center gap-4">
+            <div className={cn(
+              "w-14 h-14 rounded-3xl flex items-center justify-center text-white font-bold text-lg shadow-xl bg-gradient-to-br",
+              avatarColor(selectedEmp.id)
+            )}>
+              {ini(selectedEmp.name)}
             </div>
-
-            {/* Month summary mini-stats */}
-            <div className="flex items-center gap-6 flex-wrap">
-              {[
-                { label: "Horas Trabalhadas", value: toHHMM(totals.work), icon: Clock, color: "text-blue-300", compare: expectedMonthly > 0 ? Math.round((totals.work / expectedMonthly) * 100) : null },
-                { label: "Horas Extras", value: toHHMM(totals.extra), icon: TrendingUp, color: "text-emerald-300", compare: extraGoalPct },
-                { label: "Banco de Horas", value: (totalAccumulatedBank >= 0 ? "+" : "") + toHHMM(totalAccumulatedBank), icon: BarChart3, color: totalAccumulatedBank >= 0 ? "text-indigo-300" : "text-red-300", compare: null },
-                { label: "Faltas", value: String(totals.absences), icon: AlertCircle, color: "text-red-300", compare: null },
-              ].map((s, i) => (
-                <div key={i} className="text-center">
-                  <div className={cn("flex items-center justify-center gap-1 text-[11px] uppercase tracking-widest font-semibold mb-1", s.color)}>
-                    <s.icon className="w-3 h-3" />
-                    {s.label}
-                  </div>
-                  <div className="text-2xl font-bold font-mono">{s.value}</div>
-                  {s.compare !== null && (
-                    <div className={cn("text-[11px] mt-0.5", s.compare >= 90 ? "text-emerald-300" : "text-amber-300")}>
-                      {s.compare}% do previsto
-                    </div>
-                  )}
-                </div>
-              ))}
+            <div>
+              <h2 className="text-xl font-bold leading-tight">{selectedEmp.name}</h2>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-xs text-slate-300 font-mono">#{selectedEmp.registration}</span>
+                {selectedEmp.departments && (
+                  <span className="text-xs bg-white/10 px-2 py-0.5 rounded-full text-slate-200">
+                    {selectedEmp.departments.name}
+                  </span>
+                )}
+                {selectedEmp.schedules && (
+                  <span className="text-xs bg-white/10 px-2 py-0.5 rounded-full text-slate-200 flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    {selectedEmp.schedules.name}
+                  </span>
+                )}
+                {selectedEmp.pin_project && (
+                  <span className="text-xs bg-indigo-400/30 border border-indigo-300/40 px-2 py-0.5 rounded-full text-indigo-100 flex items-center gap-1 font-bold">
+                    PIN
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </motion.div>
@@ -1805,16 +1823,18 @@ export default function TimeCard() {
               filterHideWeekends ? "bg-slate-700 text-white border-slate-700" : "bg-background border-border/60 text-muted-foreground hover:border-primary/40"
             )}
           >Ocultar fins de semana</button>
-          <div className="w-px h-3.5 bg-border mx-0.5" />
+          {canEdit && <div className="w-px h-3.5 bg-border mx-0.5" />}
           {/* Bulk selection toggle */}
-          <button
-            onClick={() => { setBulkMode(v => !v); setBulkDays(new Set()); }}
-            className={cn("px-2.5 py-0.5 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1",
-              bulkMode ? "bg-indigo-600 text-white border-indigo-600" : "bg-background border-border/60 text-muted-foreground hover:border-indigo-400"
-            )}
-          >
-            <CheckSquare className="w-3 h-3" /> Seleção múltipla
-          </button>
+          {canEdit && (
+            <button
+              onClick={() => { setBulkMode(v => !v); setBulkDays(new Set()); }}
+              className={cn("px-2.5 py-0.5 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1",
+                bulkMode ? "bg-indigo-600 text-white border-indigo-600" : "bg-background border-border/60 text-muted-foreground hover:border-indigo-400"
+              )}
+            >
+              <CheckSquare className="w-3 h-3" /> Seleção múltipla
+            </button>
+          )}
           {(filterStatus !== "all" || filterHideWeekends) && (
             <button
               onClick={() => { setFilterStatus("all"); setFilterHideWeekends(false); }}
@@ -1982,7 +2002,7 @@ export default function TimeCard() {
 
                   {/* Actions */}
                   <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    {!bulkMode && (
+                    {!bulkMode && canEdit && (
                       <>
                         <button
                           onClick={() => openEdit(dateStr)}
@@ -2099,7 +2119,7 @@ export default function TimeCard() {
                       </td>
                       <td className="pr-4 py-3.5">
                         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity justify-end">
-                          {!bulkMode && (
+                          {!bulkMode && canEdit && (
                             <>
                               <button
                                 onClick={() => openEdit(dateStr)}

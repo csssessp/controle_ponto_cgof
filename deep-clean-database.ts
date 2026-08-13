@@ -12,13 +12,15 @@ if (!supabaseUrl || !supabaseServiceRole) {
 
 const supabase = createClient(supabaseUrl, supabaseServiceRole, {
   auth: { autoRefreshToken: false, persistSession: false },
-  fetch: (url: RequestInfo | URL, init?: RequestInit) => {
-    const actualInit = init || {};
-    return fetch(url, {
-      ...actualInit,
-      // @ts-ignore - Ignore SSL verification for development
-      rejectUnauthorized: false,
-    } as any);
+  global: {
+    fetch: (url: RequestInfo | URL, init?: RequestInit) => {
+      const actualInit = init || {};
+      return fetch(url, {
+        ...actualInit,
+        // @ts-ignore - Ignore SSL verification for development
+        rejectUnauthorized: false,
+      } as any);
+    },
   },
 });
 

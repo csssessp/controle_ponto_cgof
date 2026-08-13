@@ -9,6 +9,5 @@ let appPromise: ReturnType<typeof createApp> | null = null;
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!appPromise) appPromise = createApp();
   const app = await appPromise;
-  // @ts-expect-error — Express handler accepts (req, res) directly
-  return app(req, res);
+  return app(req as any, res as any);
 }

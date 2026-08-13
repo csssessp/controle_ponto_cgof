@@ -5,6 +5,7 @@ import fs from "fs";
 import https from "https";
 import dotenv from "dotenv";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import { createClient } from "@supabase/supabase-js";
 import { findPinHistorical } from "./src/lib/pinHistoricalData.js";
 
@@ -107,6 +108,14 @@ function minutesToHHMM(min: number): string {
   return (min < 0 ? "-" : "") + `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
+// Logs the full error server-side (message, code, hint, details) but only ever
+// sends a generic message to the client — raw Postgres/exception internals
+// (schema names, constraint names, stack traces) must never leak over the API.
+function respondError(res: any, e: any, publicMessage = "Erro interno do servidor. Tente novamente ou contate o suporte.") {
+  console.error("[api]", e?.message ?? e, e?.code ? `code=${e.code}` : "", e?.details ?? "", e?.hint ?? "");
+  res.status(500).json({ error: publicMessage });
+}
+
 function calculateWorkHours(
   entries: Array<{ time: string; type: string }>,
   expectedMinutes = 480,
@@ -183,6 +192,25 @@ export async function createApp() {
   // Serve img folder in local dev (on Vercel, images live in public/)
   app.use("/img", express.static(path.join(process.cwd(), "img")));
 
+  // ── Rate limiting ────────────────────────────────────────────────────────
+  // Generous general ceiling (protects against scraping/runaway clients)
+  // plus a tighter window for account-management endpoints, which are the
+  // most sensitive surface (user enumeration, brute-force account creation).
+  app.use("/api", rateLimit({
+    windowMs: 5 * 60 * 1000,
+    limit: 600,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Muitas requisições. Aguarde alguns instantes e tente novamente." },
+  }));
+  app.use(["/api/system-users", "/api/admin/purge-attendance"], rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Muitas requisições a esta rota sensível. Aguarde alguns minutos." },
+  }));
+
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", name: "Chronos Ponto API", timestamp: new Date().toISOString() });
@@ -200,7 +228,8 @@ export async function createApp() {
       const { data, error } = await supabase.auth.getUser(token);
       if (error || !data.user) return res.status(401).json({ error: "Sessão inválida ou expirada" });
       const role = (data.user.app_metadata?.system_role || data.user.user_metadata?.system_role || "VIEWER") as string;
-      (req as any).user = { id: data.user.id, email: data.user.email, role };
+      const employeeId = (data.user.app_metadata?.employee_id || undefined) as string | undefined;
+      (req as any).user = { id: data.user.id, email: data.user.email, role, employeeId };
       next();
     } catch {
       res.status(401).json({ error: "Falha na autenticação" });
@@ -212,7 +241,7 @@ export async function createApp() {
   // (VIEWER só pode ler). Mirrors the manual check already used in
   // /api/admin/purge-attendance, aplicado agora de forma central.
   app.use("/api", (req, res, next) => {
-    const user = (req as any).user as { role: string } | undefined;
+    const user = (req as any).user as { role: string; employeeId?: string } | undefined;
     const adminOnly = req.path.startsWith("/system-users") || req.path.startsWith("/admin/purge-attendance");
     if (adminOnly) {
       if (user?.role !== "ADMIN") return res.status(403).json({ error: "Acesso negado: requer perfil ADMIN" });
@@ -221,6 +250,27 @@ export async function createApp() {
     const isWrite = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
     if (isWrite && !["ADMIN", "AUDITOR"].includes(user?.role || "")) {
       return res.status(403).json({ error: "Acesso negado: permissão insuficiente para modificar dados" });
+    }
+
+    // Contas de acesso automático (funcionário → VIEWER vinculado a um
+    // employee_id) só podem ler o próprio espelho de ponto e o próprio saldo
+    // acumulado — nunca a lista de funcionários, uploads, relatórios de
+    // outras pessoas etc. VIEWERs "genéricos" (sem employee_id, criados
+    // manualmente em Usuários & Permissões) mantêm o acesso de leitura amplo
+    // já existente, para não quebrar contas de auditoria/gestão pré-existentes.
+    if (user?.role === "VIEWER" && user.employeeId) {
+      const eid = user.employeeId;
+      const selfScopedPaths = new Set([
+        `/employees/${eid}`,
+        `/attendance/${eid}`,
+        `/time-bank/${eid}`,
+        "/pin-project/auto-balances",
+        "/pin-project/goals",
+        "/system/last-imported-month",
+      ]);
+      if (!selfScopedPaths.has(req.path)) {
+        return res.status(403).json({ error: "Acesso restrito ao seu próprio espelho de ponto" });
+      }
     }
     next();
   });
@@ -250,7 +300,7 @@ export async function createApp() {
       });
       res.json({ success: true, count: employees.length, employees });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -264,7 +314,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, employee: data });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -294,7 +344,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, employee: data });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -335,7 +385,7 @@ export async function createApp() {
       if (fetchErr) throw fetchErr;
       res.json({ success: true, employee: data });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -353,7 +403,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, employee: data });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -364,7 +414,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -375,7 +425,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, departments: data });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -390,7 +440,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, department: data });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -405,7 +455,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, department: data });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -420,7 +470,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, department: data });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -430,7 +480,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -473,7 +523,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, schedules: (data || []).map(normalizeSchedule) });
     } catch (e: any) {
-      res.status(500).json({ error: e.message, code: (e as any).code, hint: (e as any).hint, details: (e as any).details });
+      respondError(res, e);
     }
   });
 
@@ -498,15 +548,14 @@ export async function createApp() {
         if (end_time)   payload2.end_time   = end_time;
         const { data: data2, error: error2 } = await supabase.from("schedules").insert([payload2]).select().single();
         if (error2) {
-          console.error("[POST /api/schedules] both failed:", error2);
-          return res.status(500).json({ error: error2.message, hint: error2.hint, details: error2.details, code: error2.code });
+          return respondError(res, error2);
         }
         return res.json({ success: true, schedule: normalizeSchedule(data2) });
       }
       res.json({ success: true, schedule: normalizeSchedule(data) });
     } catch (e: any) {
       console.error("[POST /api/schedules] unhandled:", e);
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -519,8 +568,7 @@ export async function createApp() {
       const { data: existing, error: fetchErr } = await supabase
         .from("schedules").select("*").eq("id", id).single();
       if (fetchErr) {
-        console.error("[PUT /api/schedules] fetch existing failed:", fetchErr);
-        return res.status(500).json({ error: fetchErr.message, code: fetchErr.code, hint: fetchErr.hint, details: fetchErr.details });
+        return respondError(res, fetchErr);
       }
 
       const isCamel = existing && "expectedWork" in existing;
@@ -544,13 +592,12 @@ export async function createApp() {
       const { data, error } = await supabase
         .from("schedules").update(updates).eq("id", id).select().single();
       if (error) {
-        console.error("[PUT /api/schedules] update failed:", error);
-        return res.status(500).json({ error: error.message, code: error.code, hint: error.hint, details: error.details });
+        return respondError(res, error);
       }
       res.json({ success: true, schedule: normalizeSchedule(data) });
     } catch (e: any) {
       console.error("[PUT /api/schedules] unhandled:", e);
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -560,7 +607,30 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message, code: (e as any).code, hint: (e as any).hint, details: (e as any).details });
+      respondError(res, e);
+    }
+  });
+
+  // ── System ────────────────────────────────────────────────────────────────
+  // Último mês com apontamento importado no sistema (qualquer funcionário).
+  // Usado para travar a navegação de contas de funcionário (VIEWER) — elas só
+  // podem ver o espelho/saldo até este mês, nunca meses futuros vazios.
+  app.get("/api/system/last-imported-month", async (_req, res) => {
+    try {
+      const { data, error } = await supabase
+        .from("attendance_records")
+        .select("date")
+        .order("date", { ascending: false })
+        .limit(1);
+      if (error) throw error;
+      const now = new Date();
+      if (!data?.[0]) {
+        return res.json({ success: true, year: now.getFullYear(), month: now.getMonth() + 1, hasData: false });
+      }
+      const [y, m] = data[0].date.substring(0, 7).split("-").map(Number);
+      res.json({ success: true, year: y, month: m, hasData: true });
+    } catch (e: any) {
+      respondError(res, e);
     }
   });
 
@@ -583,7 +653,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, count: data?.length ?? 0, records: data });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -644,7 +714,7 @@ export async function createApp() {
         .single();
       res.json({ success: true, record: full });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -703,7 +773,7 @@ export async function createApp() {
         .single();
       res.json({ success: true, record: full });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -716,7 +786,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -762,7 +832,7 @@ export async function createApp() {
         res.json({ success: true, entries, totalMinutes: total, pinSeedPresent: false });
       }
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -785,9 +855,8 @@ export async function createApp() {
         .select()
         .single();
       if (error) {
-        const detail = [error.message, error.details, error.hint].filter(Boolean).join(" | ");
-        console.error("[time-bank POST]", detail, "table:", BANK_TABLE);
-        return res.status(500).json({ error: detail });
+        console.error("[time-bank POST] table:", BANK_TABLE);
+        return respondError(res, error);
       }
       // Normalize response to snake_case
       const entry = {
@@ -801,7 +870,7 @@ export async function createApp() {
       };
       res.json({ success: true, entry });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -815,7 +884,7 @@ export async function createApp() {
       if (error) throw new Error(error.message);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -847,7 +916,7 @@ export async function createApp() {
       };
       res.json({ success: true, entry });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -895,15 +964,16 @@ export async function createApp() {
       if (error) throw new Error(error.message);
       res.json({ success: true, entry: data });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
   // GET auto-computed PIN accumulated balances from attendance records
   // Uses PIN_SEED_DEZ2025 as starting point to compute Jan–current from actual ponto records.
   // Uses PIN_SEED_MAI2026 (or any later seed) to compute current and future months.
-  app.get("/api/pin-project/auto-balances", async (_req, res) => {
+  app.get("/api/pin-project/auto-balances", async (req, res) => {
     try {
+      const reqUser = (req as any).user as { role: string; employeeId?: string } | undefined;
       const now = new Date();
       const currentYear = now.getFullYear();
       const currentMonth = now.getMonth() + 1;
@@ -1174,9 +1244,16 @@ export async function createApp() {
         };
       });
 
-      res.json({ success: true, employees });
+      // Contas de funcionário (VIEWER vinculado a um employee_id) só recebem
+      // o próprio saldo — a rota fica no whitelist do middleware de escopo
+      // justamente porque a lista completa precisa ser filtrada aqui.
+      const scoped = (reqUser?.role === "VIEWER" && reqUser.employeeId)
+        ? employees.filter((e: any) => e.id === reqUser.employeeId)
+        : employees;
+
+      res.json({ success: true, employees: scoped });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1204,7 +1281,7 @@ export async function createApp() {
       } catch { /* no app_settings table — in-memory update still applied */ }
       res.json({ success: true, goals: PIN_MONTH_GOALS });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1217,7 +1294,7 @@ export async function createApp() {
       await supabase.from(BANK_TABLE).delete().eq(BANK_EMP_COL, req.params.employeeId).eq("type", `PIN_SEED_${monthKey}`);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1228,7 +1305,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, organization: data?.[0] || null });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1242,7 +1319,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, organization: data });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1285,7 +1362,7 @@ export async function createApp() {
         chartData: Object.values(byDay).sort((a:any,b:any) => a.date.localeCompare(b.date)),
       });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1306,7 +1383,7 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, records: data });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1314,10 +1391,23 @@ export async function createApp() {
   app.post("/api/upload/ponto", async (req, res) => {
     try {
       const { base64 } = req.body;
-      if (!base64) return res.status(400).json({ error: "Missing base64" });
+      if (!base64 || typeof base64 !== "string") return res.status(400).json({ error: "Missing base64" });
+
+      const MAX_PDF_BYTES = 25 * 1024 * 1024; // 25MB — generous for a scanned ponto sheet, small enough to bound memory/CPU per request
+      // Rough size check before decoding (base64 is ~4/3 the size of the original bytes)
+      if (base64.length > MAX_PDF_BYTES * 1.4) {
+        return res.status(413).json({ error: "Arquivo excede o tamanho máximo permitido (25MB)." });
+      }
+      const buffer = Buffer.from(base64, "base64");
+      if (buffer.length > MAX_PDF_BYTES) {
+        return res.status(413).json({ error: "Arquivo excede o tamanho máximo permitido (25MB)." });
+      }
+      // PDF magic number — reject anything that isn't actually a PDF regardless of extension/claimed type
+      if (buffer.length < 5 || buffer.subarray(0, 5).toString("latin1") !== "%PDF-") {
+        return res.status(400).json({ error: "Arquivo inválido: não é um PDF." });
+      }
 
       console.log("\n📄 Extracting PDF text...");
-      const buffer = Buffer.from(base64, "base64");
       const { extractTextFromPDF } = await import("./src/services/pdfService.js");
       const { extractEmployeeDataFromPdfText } = await import("./src/services/advancedPdfService.js");
       const pdfText = await extractTextFromPDF(buffer);
@@ -1330,7 +1420,7 @@ export async function createApp() {
       res.json({ success: true, employees });
     } catch (e: any) {
       console.error("❌ PDF:", e.message);
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1469,7 +1559,7 @@ export async function createApp() {
       res.json({ success: true, results });
     } catch (e: any) {
       console.error("❌ Save:", e.message);
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1504,7 +1594,7 @@ export async function createApp() {
 
       res.json({ success: true, history });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1526,19 +1616,33 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true, records: data || [] });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
   // ── System Users (Auth) ───────────────────────────────────────────────────
   // Uses Supabase Admin API (service role key) to manage auth users + app_metadata roles.
 
+  // Supabase paginates listUsers() at 50/page by default — fetch every page so
+  // accounts beyond the first 50 aren't silently invisible to admin screens or
+  // to the provisioning-eligibility check below.
+  async function listAllAuthUsers(): Promise<any[]> {
+    const all: any[] = [];
+    for (let page = 1; page <= 200; page++) {
+      const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 200 });
+      if (error) throw error;
+      const batch = data.users || [];
+      all.push(...batch);
+      if (batch.length < 200) break;
+    }
+    return all;
+  }
+
   // List all auth users with their roles
   app.get("/api/system-users", async (_req, res) => {
     try {
-      const { data, error } = await supabase.auth.admin.listUsers();
-      if (error) throw error;
-      const users = (data.users || []).map((u: any) => ({
+      const authUsers = await listAllAuthUsers();
+      const users = authUsers.map((u: any) => ({
         id: u.id,
         email: u.email,
         name: u.user_metadata?.name || u.user_metadata?.full_name || "",
@@ -1549,7 +1653,7 @@ export async function createApp() {
       }));
       res.json({ success: true, users });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1580,7 +1684,7 @@ export async function createApp() {
         },
       });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1591,7 +1695,14 @@ export async function createApp() {
       const validRoles = ["ADMIN", "AUDITOR", "VIEWER"];
       const updates: any = {};
       if (name !== undefined) updates.user_metadata = { name };
-      if (role && validRoles.includes(role)) updates.app_metadata = { system_role: role };
+      if (role && validRoles.includes(role)) {
+        // Merge instead of replace — app_metadata may already carry employee_id
+        // (accounts auto-provisionadas para funcionários); overwriting it would
+        // silently unlink the account from its espelho de ponto.
+        const { data: existing, error: getErr } = await supabase.auth.admin.getUserById(req.params.id);
+        if (getErr) throw getErr;
+        updates.app_metadata = { ...(existing.user?.app_metadata || {}), system_role: role };
+      }
       if (password) updates.password = password;
       const { data, error } = await supabase.auth.admin.updateUserById(req.params.id, updates);
       if (error) throw error;
@@ -1606,7 +1717,7 @@ export async function createApp() {
         },
       });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
@@ -1617,7 +1728,84 @@ export async function createApp() {
       if (error) throw error;
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
+    }
+  });
+
+  // ── Provisionamento automático de acesso (funcionários → VIEWER) ──────────
+  // Cria uma conta de acesso (perfil Visualizador, restrita ao próprio
+  // espelho de ponto) para cada funcionário cadastrado que ainda não tem
+  // login no sistema. Elegibilidade = tem e-mail cadastrado E nenhuma conta
+  // já vinculada (por employee_id) ou usando o mesmo e-mail.
+  async function computeProvisioningPlan() {
+    const [{ data: emps, error: eErr }, authUsers] = await Promise.all([
+      supabase.from("employees").select("id,name,email,registration").order("name"),
+      listAllAuthUsers(),
+    ]);
+    if (eErr) throw eErr;
+    const existingEmails = new Set(
+      authUsers.map((u: any) => (u.email || "").toLowerCase()).filter(Boolean)
+    );
+    const linkedEmployeeIds = new Set(
+      authUsers.map((u: any) => u.app_metadata?.employee_id).filter(Boolean)
+    );
+    const eligible: Array<{ id: string; name: string; email: string; registration: string }> = [];
+    const missingEmail: Array<{ id: string; name: string; registration: string }> = [];
+    let alreadyRegistered = 0;
+    for (const emp of emps || []) {
+      if (linkedEmployeeIds.has(emp.id) || (emp.email && existingEmails.has(emp.email.toLowerCase()))) {
+        alreadyRegistered++;
+        continue;
+      }
+      if (!emp.email) {
+        missingEmail.push({ id: emp.id, name: emp.name, registration: emp.registration });
+        continue;
+      }
+      eligible.push({ id: emp.id, name: emp.name, email: emp.email, registration: emp.registration });
+    }
+    return { eligible, missingEmail, alreadyRegistered };
+  }
+
+  // Preview: mostra quem seria provisionado, sem criar nada.
+  app.get("/api/system-users/provisioning-preview", async (_req, res) => {
+    try {
+      const plan = await computeProvisioningPlan();
+      res.json({ success: true, ...plan });
+    } catch (e: any) {
+      respondError(res, e);
+    }
+  });
+
+  // Executa: cria uma conta VIEWER (senha inicial "123456", troca obrigatória
+  // no primeiro login) para cada funcionário elegível.
+  app.post("/api/system-users/provision-all", async (_req, res) => {
+    try {
+      const { eligible, missingEmail } = await computeProvisioningPlan();
+      const created: Array<{ id: string; name: string; email: string }> = [];
+      const failed: Array<{ id: string; name: string; email: string; error: string }> = [];
+      for (const emp of eligible) {
+        const { data, error } = await supabase.auth.admin.createUser({
+          email: emp.email,
+          password: "123456",
+          email_confirm: true,
+          user_metadata: { name: emp.name, must_change_password: true },
+          app_metadata: { system_role: "VIEWER", employee_id: emp.id },
+        });
+        if (error) {
+          failed.push({ id: emp.id, name: emp.name, email: emp.email, error: error.message });
+          continue;
+        }
+        created.push({ id: emp.id, name: emp.name, email: emp.email });
+      }
+      res.json({
+        success: true,
+        createdCount: created.length,
+        created,
+        failed,
+        missingEmail,
+      });
+    } catch (e: any) {
+      respondError(res, e);
     }
   });
 
@@ -1655,7 +1843,7 @@ export async function createApp() {
 
       res.json({ success: true, message: "Todos os apontamentos foram apagados." });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      respondError(res, e);
     }
   });
 
