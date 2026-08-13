@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Building, Clock, Users, Plus, Pencil, Trash2, Save, X,
@@ -6,6 +6,7 @@ import {
   Lock, Zap, ChevronRight, TrendingUp, Activity, Eye, EyeOff,
   Check, AlertCircle, CalendarDays, FileText, Star, AlertTriangle,
   Target, RefreshCw, UserPlus, Crown, Edit, UserCheck, Loader2,
+  Search, Download, Ban, PlayCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -53,6 +54,7 @@ const SECTION_COLORS: Record<string, string> = {
   schedules:   "bg-purple-50 border-purple-100 text-purple-600",
   holidays:    "bg-orange-50 border-orange-100 text-orange-600",
   pin:         "bg-teal-50   border-teal-100   text-teal-600",
+  reports:     "bg-cyan-50   border-cyan-100   text-cyan-600",
   users:       "bg-emerald-50 border-emerald-100 text-emerald-600",
   appearance:  "bg-pink-50   border-pink-100   text-pink-600",
   permissions: "bg-amber-50  border-amber-100  text-amber-600",
@@ -66,6 +68,7 @@ const SECTIONS = [
   { id: "schedules",   label: "Jornadas",      desc: "Turnos e cargas horárias",        icon: Clock,        status: "" },
   { id: "holidays",    label: "Feriados",      desc: "Feriados, pontos facultativos e decreto", icon: CalendarDays, status: "" },
   { id: "pin",         label: "Projeto PIN",   desc: "Metas mensais e regras do Decreto nº 70.273/2025", icon: Target, status: "" },
+  { id: "reports",     label: "Relatórios",    desc: "Saldo acumulado por setor",       icon: FileText,     status: "" },
   { id: "users",       label: "Usuários",      desc: "Acesso e perfis do sistema",      icon: Users,        status: "" },
   { id: "appearance",  label: "Aparência",     desc: "Cores, tema e preferências",      icon: Palette,      status: "" },
   { id: "permissions", label: "Permissões",    desc: "Controles e níveis de acesso",    icon: Shield,       status: "" },
@@ -383,11 +386,11 @@ export default function Settings() {
             transition={{ type: "spring", damping: 28, stiffness: 300 }}
             className={cn(
               "fixed right-0 top-0 bottom-0 bg-background border-l border-border shadow-2xl z-40 flex flex-col",
-              // O painel de Usuários mostra uma tabela com várias colunas — os
-              // 500px usados pelos demais painéis (formulários simples) deixam
-              // a tabela ilegível, com texto quebrando em 3 linhas e colunas
-              // cortadas fora da tela.
-              activePanel === "users" ? "w-[min(1000px,92vw)]" : "w-[500px]"
+              // Os painéis de Usuários e Relatórios mostram tabelas com várias
+              // colunas — os 500px usados pelos demais painéis (formulários
+              // simples) deixam a tabela ilegível, com texto quebrando em 3
+              // linhas e colunas cortadas fora da tela.
+              activePanel === "users" || activePanel === "reports" ? "w-[min(1000px,92vw)]" : "w-[500px]"
             )}
           >
             {/* Panel header */}
@@ -464,6 +467,7 @@ function PanelContent(props: any) {
     case "schedules": return <PanelSchedules {...props} />;
     case "holidays":  return <PanelHolidays />;
     case "pin":       return <PanelPinConfig />;
+    case "reports":   return <PanelReports />;
     case "users":     return <PanelUsers />;
     case "appearance":return <PanelAppearance {...props} />;
     case "permissions":return <PanelPermissions />;
@@ -1130,6 +1134,192 @@ function PanelSchedules({ schedules, employees, schedForm, setSchedForm, schedEd
   );
 }
 
+// ── Relatórios ───────────────────────────────────────────────────────────────
+type ReportRow = {
+  id: string;
+  name: string;
+  email: string | null;
+  registration: string | null;
+  department: string;
+  pinProject: boolean;
+  balance: number | null; // minutes — null = sem dado ainda
+};
+
+function reportToHHMM(min: number) {
+  const a = Math.abs(Math.round(min));
+  return (min < 0 ? "-" : "+") + String(Math.floor(a / 60)).padStart(2, "0") + ":" + String(a % 60).padStart(2, "0");
+}
+
+function PanelReports() {
+  const [rows, setRows] = useState<ReportRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [deptFilter, setDeptFilter] = useState("all");
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [empRes, balRes] = await Promise.all([
+        fetch("/api/employees").then(r => r.json()),
+        fetch("/api/pin-project/auto-balances").then(r => r.json()),
+      ]);
+      const balanceById = new Map<string, number | null>();
+      for (const b of (balRes.employees || [])) {
+        const monthKeys = Object.keys(b.autoMonths || {});
+        const lastKey = monthKeys[monthKeys.length - 1];
+        const entry = lastKey ? b.autoMonths[lastKey] : null;
+        balanceById.set(b.id, entry?.acum ?? null);
+      }
+      const mapped: ReportRow[] = (empRes.employees || []).map((e: any) => ({
+        id: e.id,
+        name: e.name,
+        email: e.email || null,
+        registration: e.registration || null,
+        department: e.departments?.name || "Sem setor",
+        pinProject: !!e.pin_project,
+        balance: balanceById.has(e.id) ? balanceById.get(e.id)! : null,
+      }));
+      mapped.sort((a, b) => a.department.localeCompare(b.department) || a.name.localeCompare(b.name));
+      setRows(mapped);
+    } catch {
+      toast.error("Erro ao carregar relatório");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const departments = useMemo(
+    () => [...new Set(rows.map(r => r.department))].sort(),
+    [rows]
+  );
+
+  const filtered = useMemo(() => rows.filter(r => {
+    if (deptFilter !== "all" && r.department !== deptFilter) return false;
+    if (search && !r.name.toLowerCase().includes(search.toLowerCase()) && !(r.email || "").toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  }), [rows, deptFilter, search]);
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, ReportRow[]>();
+    for (const r of filtered) {
+      if (!map.has(r.department)) map.set(r.department, []);
+      map.get(r.department)!.push(r);
+    }
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [filtered]);
+
+  const exportCsv = () => {
+    const header = ["Setor", "Nome", "Matrícula", "E-mail", "Projeto PIN", "Saldo Acumulado (min)"];
+    const lines = filtered.map(r => [
+      r.department, r.name, r.registration ?? "", r.email ?? "",
+      r.pinProject ? "Sim" : "Não", r.balance ?? "",
+    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"));
+    const csv = [header.join(";"), ...lines].join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `relatorio-saldos-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-xs text-muted-foreground">
+          Saldo de banco de horas acumulado até o mês atual, agrupado por setor.
+        </p>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+            Atualizar
+          </Button>
+          <Button variant="outline" size="sm" onClick={exportCsv} disabled={loading || filtered.length === 0}>
+            <Download className="w-4 h-4 mr-2" />
+            Exportar CSV
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative flex-1 min-w-[220px]">
+          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Buscar por nome ou e-mail..."
+            className="pl-9 h-9 rounded-xl"
+          />
+        </div>
+        <Select value={deptFilter} onValueChange={setDeptFilter}>
+          <SelectTrigger className="w-[220px] h-9 rounded-xl">
+            <SelectValue placeholder="Todos os setores" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Todos os setores</SelectItem>
+            {departments.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {loading ? (
+        <div className="py-16 text-center text-muted-foreground text-sm">Carregando…</div>
+      ) : grouped.length === 0 ? (
+        <div className="py-16 text-center text-muted-foreground text-sm">Nenhum funcionário encontrado.</div>
+      ) : (
+        <div className="space-y-4">
+          {grouped.map(([dept, deptRows]) => {
+            const total = deptRows.reduce((s, r) => s + (r.balance ?? 0), 0);
+            return (
+              <div key={dept} className="border rounded-xl bg-card overflow-hidden">
+                <div className="px-4 py-2.5 border-b bg-muted/40 flex items-center justify-between">
+                  <span className="font-semibold text-sm">{dept}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {deptRows.length} funcionário{deptRows.length !== 1 ? "s" : ""} · saldo total{" "}
+                    <span className={cn("font-semibold", total >= 0 ? "text-emerald-600" : "text-red-600")}>
+                      {reportToHHMM(total)}
+                    </span>
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left px-4 py-2 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Nome</th>
+                        <th className="text-left px-4 py-2 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Matrícula</th>
+                        <th className="text-left px-4 py-2 font-semibold text-muted-foreground text-xs uppercase tracking-wide">E-mail</th>
+                        <th className="text-left px-4 py-2 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Saldo Acumulado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {deptRows.map((r, idx) => (
+                        <tr key={r.id} className={cn("border-b last:border-0", idx % 2 === 1 && "bg-muted/10")}>
+                          <td className="px-4 py-2.5 font-medium">
+                            {r.name}
+                            {r.pinProject && <Badge className="ml-2 rounded-full text-[9px] bg-indigo-50 text-indigo-700 border-indigo-200 px-1.5">PIN</Badge>}
+                          </td>
+                          <td className="px-4 py-2.5 text-muted-foreground">{r.registration || "—"}</td>
+                          <td className="px-4 py-2.5 text-muted-foreground">{r.email || "—"}</td>
+                          <td className={cn("px-4 py-2.5 font-mono font-semibold", r.balance === null ? "text-muted-foreground" : r.balance >= 0 ? "text-emerald-600" : "text-red-600")}>
+                            {r.balance === null ? "—" : reportToHHMM(r.balance)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Usuários ─────────────────────────────────────────────────────────────────
 // Único lugar do sistema pra gestão de usuários — evita a duplicação que já
 // causou divergência de código antes neste projeto (banco de horas do
@@ -1145,6 +1335,7 @@ interface SystemUser {
   created_at: string;
   last_sign_in?: string;
   confirmed: boolean;
+  active: boolean;
 }
 
 const ROLE_CONFIG: Record<SystemRole, { label: string; description: string; icon: React.ReactNode; color: string }> = {
@@ -1313,6 +1504,45 @@ function PanelUsers() {
     }
   };
 
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const toggleActive = async (u: SystemUser) => {
+    setTogglingId(u.id);
+    try {
+      const r = await fetch(`/api/system-users/${u.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active: !u.active }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Erro ao atualizar status");
+      setUsers(prev => prev.map(x => x.id === u.id ? { ...x, active: d.user.active } : x));
+      toast.success(d.user.active ? "Usuário ativado" : "Usuário desativado");
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  const [deactivateAllOpen, setDeactivateAllOpen] = useState(false);
+  const [deactivateAllLoading, setDeactivateAllLoading] = useState(false);
+  const activeViewerCount = users.filter(u => u.role === "VIEWER" && u.active).length;
+  const handleDeactivateAllViewers = async () => {
+    setDeactivateAllLoading(true);
+    try {
+      const r = await fetch("/api/system-users/deactivate-all-viewers", { method: "POST" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Erro ao desativar");
+      toast.success(`${d.deactivatedCount} usuário${d.deactivatedCount !== 1 ? "s" : ""} Visualizador${d.deactivatedCount !== 1 ? "es" : ""} desativado${d.deactivatedCount !== 1 ? "s" : ""}`);
+      setDeactivateAllOpen(false);
+      load();
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setDeactivateAllLoading(false);
+    }
+  };
+
   const fmtDate = (s?: string) => s ? new Date(s).toLocaleDateString("pt-BR") : "—";
 
   return (
@@ -1322,6 +1552,15 @@ function PanelUsers() {
         <Button variant="outline" size="sm" onClick={load} disabled={loading}>
           <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
           Atualizar
+        </Button>
+        <Button
+          variant="outline" size="sm"
+          className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
+          onClick={() => setDeactivateAllOpen(true)}
+          disabled={activeViewerCount === 0}
+        >
+          <Ban className="w-4 h-4 mr-2" />
+          Desativar Visualizadores
         </Button>
         <Button variant="outline" size="sm" onClick={openProvision}>
           <UserCheck className="w-4 h-4 mr-2" />
@@ -1383,7 +1622,11 @@ function PanelUsers() {
                     <td className="px-4 py-3 text-muted-foreground">{fmtDate(u.created_at)}</td>
                     <td className="px-4 py-3 text-muted-foreground">{fmtDate(u.last_sign_in)}</td>
                     <td className="px-4 py-3">
-                      {u.confirmed ? (
+                      {!u.active ? (
+                        <span className="inline-flex items-center gap-1 text-xs text-red-700 bg-red-50 border border-red-200 rounded-full px-2 py-0.5 font-medium">
+                          <Ban className="w-3 h-3" /> Desativado
+                        </span>
+                      ) : u.confirmed ? (
                         <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-50 border border-green-200 rounded-full px-2 py-0.5 font-medium">
                           <Check className="w-3 h-3" /> Ativo
                         </span>
@@ -1395,6 +1638,16 @@ function PanelUsers() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1 justify-end">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className={cn("h-7 w-7", u.active ? "text-amber-600 hover:text-amber-700 hover:bg-amber-50" : "text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50")}
+                          onClick={() => toggleActive(u)}
+                          disabled={togglingId === u.id}
+                          title={u.active ? "Desativar acesso" : "Ativar acesso"}
+                        >
+                          {u.active ? <Ban className="w-3.5 h-3.5" /> : <PlayCircle className="w-3.5 h-3.5" />}
+                        </Button>
                         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(u)}>
                           <Pencil className="w-3.5 h-3.5" />
                         </Button>
@@ -1512,6 +1765,30 @@ function PanelUsers() {
             <Button variant="outline" onClick={() => setDeleteId(null)}>Cancelar</Button>
             <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
               {deleting ? "Removendo…" : "Remover"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Desativar todos os Visualizadores */}
+      <Dialog open={deactivateAllOpen} onOpenChange={o => { if (!deactivateAllLoading) setDeactivateAllOpen(o); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-700">
+              <Ban className="w-5 h-5" /> Desativar Visualizadores?
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground py-2">
+            Suspende o login de <strong>{activeViewerCount} usuário{activeViewerCount !== 1 ? "s" : ""}</strong> com
+            perfil Visualizador (inclusive contas de funcionários já provisionadas). É reversível — reative
+            individualmente na tabela quando quiser.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeactivateAllOpen(false)} disabled={deactivateAllLoading}>
+              Cancelar
+            </Button>
+            <Button variant="destructive" onClick={handleDeactivateAllViewers} disabled={deactivateAllLoading}>
+              {deactivateAllLoading ? "Desativando…" : "Desativar todos"}
             </Button>
           </DialogFooter>
         </DialogContent>

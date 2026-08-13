@@ -1638,6 +1638,15 @@ export async function createApp() {
     return all;
   }
 
+  // Supabase marca "banido" com um timestamp futuro em banned_until (null ou
+  // data passada = conta ativa). Usamos isso como liga/desliga de acesso —
+  // reversível, não apaga a conta nem os dados.
+  const BAN_FOREVER = "876000h"; // ~100 anos — efetivamente permanente até um admin reativar
+  function isActiveUser(u: any): boolean {
+    if (!u.banned_until) return true;
+    return new Date(u.banned_until).getTime() <= Date.now();
+  }
+
   // List all auth users with their roles
   app.get("/api/system-users", async (_req, res) => {
     try {
@@ -1650,6 +1659,7 @@ export async function createApp() {
         created_at: u.created_at,
         last_sign_in: u.last_sign_in_at || null,
         confirmed: !!u.confirmed_at,
+        active: isActiveUser(u),
       }));
       res.json({ success: true, users });
     } catch (e: any) {
@@ -1688,10 +1698,10 @@ export async function createApp() {
     }
   });
 
-  // Update user role and/or name/password
+  // Update user role and/or name/password/active
   app.patch("/api/system-users/:id", async (req, res) => {
     try {
-      const { role, name, password } = req.body;
+      const { role, name, password, active } = req.body;
       const validRoles = ["ADMIN", "AUDITOR", "VIEWER"];
       const updates: any = {};
       if (name !== undefined) updates.user_metadata = { name };
@@ -1704,6 +1714,7 @@ export async function createApp() {
         updates.app_metadata = { ...(existing.user?.app_metadata || {}), system_role: role };
       }
       if (password) updates.password = password;
+      if (typeof active === "boolean") updates.ban_duration = active ? "none" : BAN_FOREVER;
       const { data, error } = await supabase.auth.admin.updateUserById(req.params.id, updates);
       if (error) throw error;
       res.json({
@@ -1714,8 +1725,31 @@ export async function createApp() {
           name: data.user.user_metadata?.name || "",
           role: data.user.app_metadata?.system_role || "VIEWER",
           confirmed: !!data.user.confirmed_at,
+          active: isActiveUser(data.user),
         },
       });
+    } catch (e: any) {
+      respondError(res, e);
+    }
+  });
+
+  // Suspende o login de todas as contas com perfil VIEWER de uma vez
+  // (reversível — cada conta pode ser reativada individualmente depois).
+  app.post("/api/system-users/deactivate-all-viewers", async (_req, res) => {
+    try {
+      const authUsers = await listAllAuthUsers();
+      const viewers = authUsers.filter((u: any) => {
+        const role = u.app_metadata?.system_role || u.user_metadata?.system_role || "VIEWER";
+        return role === "VIEWER" && isActiveUser(u);
+      });
+      const deactivated: Array<{ id: string; email: string }> = [];
+      const failed: Array<{ id: string; email: string; error: string }> = [];
+      for (const u of viewers) {
+        const { error } = await supabase.auth.admin.updateUserById(u.id, { ban_duration: BAN_FOREVER });
+        if (error) failed.push({ id: u.id, email: u.email, error: error.message });
+        else deactivated.push({ id: u.id, email: u.email });
+      }
+      res.json({ success: true, deactivatedCount: deactivated.length, deactivated, failed });
     } catch (e: any) {
       respondError(res, e);
     }

@@ -38,6 +38,8 @@ export default function Login() {
         setError("E-mail ou senha incorretos.");
       } else if (msg.includes("Email not confirmed")) {
         setError("E-mail ainda não confirmado.");
+      } else if (msg.toLowerCase().includes("banned") || msg.toLowerCase().includes("disabled")) {
+        setError("Este acesso está desativado. Fale com o administrador do sistema.");
       } else {
         setError("Erro ao conectar. Tente novamente.");
       }
