@@ -1467,17 +1467,22 @@ export default function TimeCard() {
             ))}
           </div>
 
-          {/* Export PDF — split button */}
+          {/* Export PDF — split button (Visualizador só exporta o próprio
+              espelho, sem menu de exportação em massa de outros funcionários) */}
           <div className="flex items-center gap-0.5">
             <Button
               variant="outline" size="sm"
-              className="rounded-l-xl rounded-r-none h-10 gap-2 border-border/70 text-muted-foreground hover:text-foreground pr-3"
+              className={cn(
+                "h-10 gap-2 border-border/70 text-muted-foreground hover:text-foreground pr-3",
+                canEdit ? "rounded-l-xl rounded-r-none" : "rounded-xl"
+              )}
               disabled={exportingPdf || !selectedEmpId}
               onClick={handleExportCurrentPdf}
             >
               <Download className="w-3.5 h-3.5" />
               {exportingPdf ? "Gerando…" : "Exportar PDF"}
             </Button>
+            {canEdit && (
             <div className="relative" ref={exportMenuRef}>
               <Button
                 variant="outline" size="sm"
@@ -1515,6 +1520,7 @@ export default function TimeCard() {
                 </div>
               )}
             </div>
+            )}
           </div>
         </div>
       </div>
