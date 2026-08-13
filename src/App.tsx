@@ -8,8 +8,6 @@ import {
   Calendar,
   Settings,
   LogOut,
-  PanelLeftClose,
-  PanelLeftOpen,
   X,
   Search,
   Moon,
@@ -210,29 +208,34 @@ function Sidebar() {
         transition={{ duration: 0.25, ease: "easeInOut" }}
         className="fixed left-0 top-0 h-full bg-[#0f2044] border-r border-white/10 z-50 flex flex-col shadow-xl overflow-hidden"
       >
-        {/* Recolher/expandir + nome institucional — o brasão aparece só uma vez,
-            no cabeçalho principal (Topbar); aqui é só texto, pra não duplicar
-            a marca. */}
-        <div className={cn(
-          "shrink-0 h-16 flex items-center border-b border-white/10",
-          sidebarOpen ? "px-3 gap-3" : "justify-center px-0"
-        )}>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={toggleSidebar}
-            className="w-9 h-9 rounded-lg text-white/70 hover:text-white hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white/30 shrink-0"
-            title={sidebarOpen ? "Recolher menu" : "Expandir menu"}
-          >
-            {sidebarOpen ? <PanelLeftClose className="w-[19px] h-[19px]" /> : <PanelLeftOpen className="w-[19px] h-[19px]" />}
-          </Button>
-          {sidebarOpen && (
-            <div className="min-w-0 leading-tight">
-              <p className="text-[11px] font-bold text-white truncate">Controle de Ponto</p>
-              <p className="text-[9px] text-white/40 uppercase tracking-wider truncate">CGOF</p>
-            </div>
+        {/* Brasão = botão de recolher/expandir. Único brasão do sistema fica
+            aqui, na sidebar; o cabeçalho principal (Topbar) só tem texto.
+            Recolhida, usa brasao-emblema.png — recorte exato (via análise de
+            canal alfa, não CSS) do mesmo brasao-3-texto-branco.png oficial,
+            sem a marca d'água/texto, pra preencher bem o espaço estreito. */}
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          title={sidebarOpen ? "Recolher menu" : "Expandir menu"}
+          className={cn(
+            "shrink-0 h-16 flex items-center border-b border-white/10 transition-colors hover:bg-white/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/30",
+            sidebarOpen ? "px-4 justify-start" : "justify-center px-0"
           )}
-        </div>
+        >
+          {sidebarOpen ? (
+            <img
+              src="/img/BRASAO-3-texto-branco.png"
+              alt="Governo do Estado de São Paulo — Controle de Ponto CGOF"
+              className="h-14 w-auto object-contain shrink-0"
+            />
+          ) : (
+            <img
+              src="/img/brasao-emblema.png"
+              alt="Governo do Estado de São Paulo"
+              className="h-[60px] w-auto object-contain shrink-0"
+            />
+          )}
+        </button>
 
         <nav className="flex-1 px-3 py-3 space-y-1 overflow-y-auto overflow-x-hidden">
           {navItems.map((item) => {
@@ -302,17 +305,10 @@ function Topbar() {
   return (
     <header className="h-16 border-b border-white/10 bg-[#0f2044] sticky top-0 z-40 px-6 flex items-center justify-between shadow-lg">
       <div className="flex items-center gap-4">
-        <Link to="/ponto" className="flex items-center h-14 shrink-0">
-          <img
-            src="/img/BRASAO-3-texto-branco.png"
-            alt="CGOF"
-            className="object-contain h-14 w-auto"
-          />
-        </Link>
-        <div className="hidden md:flex flex-col leading-tight">
+        <Link to="/ponto" className="flex flex-col leading-tight justify-center h-14 shrink-0">
           <span className="text-white font-bold text-sm tracking-wide">Controle de Ponto CGOF</span>
-          <span className="text-white/50 text-[10px] uppercase tracking-widest">Coordenadoria de Gestão Orçamentária e Financeira</span>
-        </div>
+          <span className="text-white/50 text-[10px] uppercase tracking-widest hidden md:inline">Coordenadoria de Gestão Orçamentária e Financeira</span>
+        </Link>
       </div>
 
       <div className="flex items-center gap-4">
