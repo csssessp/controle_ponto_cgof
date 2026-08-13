@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   Building, Clock, Users, Plus, Pencil, Trash2, Save, X,
   Building2, Phone, Mail, MapPin, Hash, Palette, Shield,
-  Lock, Zap, ChevronRight, TrendingUp, Activity, Eye, EyeOff,
+  Lock, Zap, ChevronRight, Activity, Eye, EyeOff,
   Check, AlertCircle, CalendarDays, FileText, Star, AlertTriangle,
   Target, RefreshCw, UserPlus, Crown, Edit, UserCheck, Loader2,
   Search, Download, Ban, PlayCircle,
@@ -27,6 +27,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useAuthStore } from "@/src/lib/store";
+import { exportSingleEspelhoPdf, exportAllEspelhosPdf } from "@/src/lib/espelhoPdfExport";
 
 type Dept = { id: string; name: string };
 type Schedule = {
@@ -1150,26 +1151,67 @@ function reportToHHMM(min: number) {
   return (min < 0 ? "-" : "+") + String(Math.floor(a / 60)).padStart(2, "0") + ":" + String(a % 60).padStart(2, "0");
 }
 
+const REPORT_MONTH_ABBR: Record<number, string> = {
+  1: "JAN", 2: "FEV", 3: "MAR", 4: "ABR", 5: "MAI", 6: "JUN",
+  7: "JUL", 8: "AGO", 9: "SET", 10: "OUT", 11: "NOV", 12: "DEZ",
+};
+const REPORT_MONTH_NAMES = [
+  "Janeiro","Fevereiro","Março","Abril","Maio","Junho",
+  "Julho","Agosto","Setembro","Outubro","Novembro","Dezembro",
+];
+
 function PanelReports() {
   const [rows, setRows] = useState<ReportRow[]>([]);
+  const [employeesRaw, setEmployeesRaw] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [deptFilter, setDeptFilter] = useState("all");
+  const [refMonth, setRefMonth] = useState<{ year: number; month: number } | null>(null);
+
+  // Exportação de espelhos em PDF — único lugar do sistema com essa função
+  // (removida da tela de Espelho de Ponto de cada funcionário).
+  const now = new Date();
+  const [pdfYear, setPdfYear] = useState(now.getFullYear());
+  const [pdfMonth, setPdfMonth] = useState(now.getMonth() + 1);
+  const [pdfEmpId, setPdfEmpId] = useState("");
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfProgress, setPdfProgress] = useState<{ current: number; total: number; label: string } | null>(null);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [empRes, balRes] = await Promise.all([
+      const [empRes, balRes, lastImportedRes] = await Promise.all([
         fetch("/api/employees").then(r => r.json()),
         fetch("/api/pin-project/auto-balances").then(r => r.json()),
+        fetch("/api/system/last-imported-month").then(r => r.json()),
       ]);
+      // Saldo mostrado é sempre até o ÚLTIMO MÊS IMPORTADO no sistema — nunca
+      // o mês corrente "ao vivo" (que pode estar parcialmente apontado e dar
+      // uma falsa impressão de saldo incompleto).
+      const targetYear = lastImportedRes?.year ?? new Date().getFullYear();
+      const targetMonth = lastImportedRes?.month ?? (new Date().getMonth() + 1);
+      setRefMonth({ year: targetYear, month: targetMonth });
+      const targetKey = `${REPORT_MONTH_ABBR[targetMonth]}${targetYear}`;
+
       const balanceById = new Map<string, number | null>();
       for (const b of (balRes.employees || [])) {
         const monthKeys = Object.keys(b.autoMonths || {});
-        const lastKey = monthKeys[monthKeys.length - 1];
-        const entry = lastKey ? b.autoMonths[lastKey] : null;
+        // Usa a chave do mês-alvo se existir; senão, a última disponível
+        // antes dele (funcionário pode não ter dado ainda pro mês exato).
+        let key = monthKeys.includes(targetKey) ? targetKey : null;
+        if (!key) {
+          const targetYM = targetYear * 12 + targetMonth;
+          const before = monthKeys.filter(mk => {
+            const abbr = mk.slice(0, 3), yr = parseInt(mk.slice(3), 10);
+            const mo = Object.entries(REPORT_MONTH_ABBR).find(([, a]) => a === abbr)?.[0];
+            return mo ? (yr * 12 + parseInt(mo, 10)) <= targetYM : false;
+          });
+          key = before.at(-1) ?? null;
+        }
+        const entry = key ? b.autoMonths[key] : null;
         balanceById.set(b.id, entry?.acum ?? null);
       }
+      setEmployeesRaw(empRes.employees || []);
       const mapped: ReportRow[] = (empRes.employees || []).map((e: any) => ({
         id: e.id,
         name: e.name,
@@ -1210,38 +1252,169 @@ function PanelReports() {
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [filtered]);
 
-  const exportCsv = () => {
-    const header = ["Setor", "Nome", "Matrícula", "E-mail", "Projeto PIN", "Saldo Acumulado (min)"];
-    const lines = filtered.map(r => [
-      r.department, r.name, r.registration ?? "", r.email ?? "",
-      r.pinProject ? "Sim" : "Não", r.balance ?? "",
-    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"));
-    const csv = [header.join(";"), ...lines].join("\n");
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `relatorio-saldos-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const [exporting, setExporting] = useState(false);
+  const exportExcel = async () => {
+    setExporting(true);
+    try {
+      const ExcelJS = (await import("exceljs")).default;
+      const wb = new ExcelJS.Workbook();
+      wb.creator = "Chronos Ponto";
+      wb.created = new Date();
+      const ws = wb.addWorksheet("Saldos por Setor");
+      ws.columns = [
+        { header: "Setor", key: "dept", width: 22 },
+        { header: "Nome", key: "name", width: 34 },
+        { header: "Matrícula", key: "reg", width: 14 },
+        { header: "E-mail", key: "email", width: 32 },
+        { header: "Projeto PIN", key: "pin", width: 12 },
+        { header: "Saldo Acumulado", key: "balance", width: 16 },
+      ];
+      const headerRow = ws.getRow(1);
+      headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      headerRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0F2044" } };
+      headerRow.alignment = { vertical: "middle" };
+      headerRow.height = 20;
+
+      for (const r of filtered) {
+        const row = ws.addRow({
+          dept: r.department,
+          name: r.name,
+          reg: r.registration ?? "",
+          email: r.email ?? "",
+          pin: r.pinProject ? "Sim" : "Não",
+          // Horas (HH:MM), não minutos — negativo em vermelho, positivo em verde.
+          balance: r.balance === null ? "—" : reportToHHMM(r.balance),
+        });
+        const balCell = row.getCell("balance");
+        balCell.alignment = { horizontal: "center" };
+        balCell.font = r.balance === null
+          ? { color: { argb: "FF6B7280" } }
+          : { bold: true, color: { argb: r.balance < 0 ? "FFDC2626" : "FF15803D" } };
+      }
+      ws.autoFilter = { from: "A1", to: "F1" };
+
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `relatorio-saldos-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Erro ao gerar Excel");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleExportSinglePdf = async () => {
+    const emp = employeesRaw.find(e => e.id === pdfEmpId);
+    if (!emp) { toast.error("Selecione um funcionário"); return; }
+    setPdfBusy(true);
+    try {
+      await exportSingleEspelhoPdf(emp, pdfYear, pdfMonth);
+    } catch {
+      toast.error("Erro ao gerar PDF");
+    } finally {
+      setPdfBusy(false);
+    }
+  };
+
+  const handleExportAllPdf = async (pinOnly: boolean) => {
+    setPdfBusy(true);
+    setPdfProgress({ current: 0, total: employeesRaw.length, label: "Preparando…" });
+    try {
+      const count = await exportAllEspelhosPdf(employeesRaw, pdfYear, pdfMonth, { pinOnly }, (current, total, label) => {
+        setPdfProgress({ current, total, label });
+      });
+      toast.success(`PDF com ${count} funcionário${count !== 1 ? "s" : ""} exportado com sucesso`);
+    } catch (e: any) {
+      toast.error(e?.message || "Erro ao gerar PDFs");
+    } finally {
+      setPdfBusy(false);
+      setPdfProgress(null);
+    }
   };
 
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <p className="text-xs text-muted-foreground">
-          Saldo de banco de horas acumulado até o mês atual, agrupado por setor.
+          Saldo de banco de horas acumulado até{" "}
+          {refMonth ? <strong>{REPORT_MONTH_NAMES[refMonth.month - 1]}/{refMonth.year}</strong> : "o último mês importado"}
+          {" "}(último mês com apontamento no sistema), agrupado por setor.
         </p>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={load} disabled={loading}>
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
             Atualizar
           </Button>
-          <Button variant="outline" size="sm" onClick={exportCsv} disabled={loading || filtered.length === 0}>
+          <Button variant="outline" size="sm" onClick={exportExcel} disabled={loading || exporting || filtered.length === 0}>
             <Download className="w-4 h-4 mr-2" />
-            Exportar CSV
+            {exporting ? "Gerando…" : "Exportar Excel"}
           </Button>
         </div>
+      </div>
+
+      {/* Exportação de espelhos em PDF — único lugar do sistema com essa
+          função (era um botão dentro de cada Espelho de Ponto individual). */}
+      <div className="border rounded-xl bg-card p-4 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Exportar Espelhos (PDF)</p>
+          <div className="flex items-center gap-2">
+            <Select value={String(pdfMonth)} onValueChange={v => setPdfMonth(Number(v))}>
+              <SelectTrigger className="w-[130px] h-8 rounded-lg text-xs" disabled={pdfBusy}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {REPORT_MONTH_NAMES.map((m, i) => <SelectItem key={m} value={String(i + 1)}>{m}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Input
+              type="number"
+              value={pdfYear}
+              onChange={e => setPdfYear(Number(e.target.value))}
+              disabled={pdfBusy}
+              className="w-[90px] h-8 rounded-lg text-xs"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <Select value={pdfEmpId} onValueChange={setPdfEmpId}>
+            <SelectTrigger className="flex-1 min-w-[220px] h-9 rounded-xl text-xs" disabled={pdfBusy}>
+              <SelectValue placeholder="Selecionar funcionário..." />
+            </SelectTrigger>
+            <SelectContent>
+              {employeesRaw.map(e => <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="sm" className="rounded-xl h-9" onClick={handleExportSinglePdf} disabled={pdfBusy || !pdfEmpId}>
+            <FileText className="w-3.5 h-3.5 mr-2" /> Funcionário
+          </Button>
+          <Button variant="outline" size="sm" className="rounded-xl h-9" onClick={() => handleExportAllPdf(false)} disabled={pdfBusy || employeesRaw.length === 0}>
+            <Download className="w-3.5 h-3.5 mr-2" /> Todos
+          </Button>
+          <Button variant="outline" size="sm" className="rounded-xl h-9 border-indigo-200 text-indigo-700 hover:bg-indigo-50" onClick={() => handleExportAllPdf(true)} disabled={pdfBusy || employeesRaw.length === 0}>
+            <span className="w-3.5 h-3.5 rounded flex items-center justify-center bg-indigo-600 text-white text-[9px] font-black shrink-0 mr-2">P</span>
+            Projeto PIN
+          </Button>
+        </div>
+
+        {pdfProgress && (
+          <div className="space-y-1.5">
+            <div className="h-2 w-full bg-muted rounded-full overflow-hidden">
+              <div
+                className="h-full bg-primary rounded-full transition-all duration-200 ease-out"
+                style={{ width: `${pdfProgress.total > 0 ? Math.round((pdfProgress.current / pdfProgress.total) * 100) : 0}%` }}
+              />
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              {pdfProgress.total > 0 ? `${pdfProgress.current} de ${pdfProgress.total} — ${pdfProgress.label}` : pdfProgress.label}
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
