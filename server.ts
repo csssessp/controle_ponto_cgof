@@ -1059,7 +1059,7 @@ export async function createApp() {
         for (let page = 0; page < 20; page++) {
           const { data: chunk, error: chunkErr } = await supabase
             .from("attendance_records")
-            .select("employee_id, date, status, overtime50, overtime100, total_work")
+            .select("employee_id, date, status, overtime50, overtime100, total_work, delay")
             .in("employee_id", empIds)
             .gte("date", recStartDate)
             .lte("date", recEndDate)
@@ -1074,7 +1074,7 @@ export async function createApp() {
       }
 
       // Index records by empId → date prefix
-      const recsByEmp: Record<string, { date: string; overtime50: number; overtime100: number; total_work: number | null; status: string }[]> = {};
+      const recsByEmp: Record<string, { date: string; overtime50: number; overtime100: number; total_work: number | null; status: string; delay: number }[]> = {};
       for (const r of allRecs || []) {
         const eid = r.employee_id;
         if (!recsByEmp[eid]) recsByEmp[eid] = [];
@@ -1084,6 +1084,7 @@ export async function createApp() {
           overtime100: r.overtime100 || 0,
           total_work: r.total_work ?? null,
           status: r.status,
+          delay: r.delay || 0,
         });
       }
 
@@ -1144,7 +1145,9 @@ export async function createApp() {
                 if (ot === 0 && r.total_work != null && r.total_work > empExpected) {
                   ot = r.total_work - empExpected;
                 }
-                return s + ot;
+                // Déficit do dia (falta, saída antecipada, jornada incompleta) reduz as
+                // horas extras do mês — mesma regra já usada em TimeCard/espelho (extra - delay).
+                return s + ot - (r.delay || 0);
               }, 0);
               const bankGoal = 2400; // banco de horas sempre desconta 40h/mês — bonusGoal é só p/ acompanhamento
               accumulated += totalExtras - bankGoal;
@@ -1209,7 +1212,7 @@ export async function createApp() {
             if (ot === 0 && r.total_work != null && r.total_work > empExpected) {
               ot = r.total_work - empExpected;
             }
-            return s + ot;
+            return s + ot - (r.delay || 0);
           }, 0);
           const bonusGoal = PIN_MONTH_GOALS[m] ?? 2400;
           accumulated += totalExtras; // sem meta/dedução PIN — não é membro do projeto
