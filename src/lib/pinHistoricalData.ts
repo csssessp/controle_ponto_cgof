@@ -136,9 +136,14 @@ export function pinMonthKey(year: number, month: number): string {
   return `${PIN_MONTH_ABBR[month]}${year}`;
 }
 
+export type PinDayCalc = { date: string; status: string; ot: number; delay: number; net: number };
+
 export type PinAutoMonth = {
   acum: number | null; extras: number; goal: number; recordCount: number;
   isComplete: boolean; isCurrentMonth: boolean; noSeedMode: boolean; isManualOverride?: boolean;
+  /* Detalhamento dia a dia — só presente nos meses calculados automaticamente
+     (Ago/26+), usado para o relatório de comprovação do saldo. */
+  days?: PinDayCalc[];
 };
 export type PinAutoMonths = Record<string, PinAutoMonth>;
 

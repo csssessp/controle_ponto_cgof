@@ -16,7 +16,7 @@ import {
   Target, TrendingUp, AlertTriangle, CheckCircle2,
   Pencil, Save, X, RotateCcw, RefreshCw, Search,
   ChevronDown, ChevronUp, Info, Users, Clock,
-  AlertCircle, ChevronRight,
+  AlertCircle, ChevronRight, ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -24,6 +24,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import BalanceProofDrawer from "@/src/components/BalanceProofDrawer";
+import type { PinAutoMonths } from "@/src/lib/pinHistoricalData";
 
 /* ── Helpers ───────────────────────────────────────────────────────────────── */
 const toHHMM = (min: number | null): string => {
@@ -68,6 +70,7 @@ type PinMonth = {
 type PinEmployeeRow = {
   id: string;
   name: string;
+  registration: string | null;
   department: string | null;
   pin_project: boolean;
   months: Record<string, PinMonth>;
@@ -92,6 +95,12 @@ export default function PinProject() {
   const [editValue, setEditValue]         = useState("");
   const [savingMk, setSavingMk]           = useState<string | null>(null);
 
+  // Detalhamento completo (extras/goal/days) por funcionário — o `months` de
+  // PinEmployeeRow acima só guarda os campos usados na tabela/modal de edição;
+  // a comprovação de saldo precisa do objeto cru retornado pelo servidor.
+  const [rawAutoMonths, setRawAutoMonths] = useState<Record<string, PinAutoMonths>>({});
+  const [proofEmpId, setProofEmpId]       = useState<string | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -106,11 +115,15 @@ export default function PinProject() {
         .map((e: any) => ({
           id: e.id,
           name: e.name,
+          registration: e.registration ?? null,
           department: e.department ?? null,
           pin_project: !!e.pin_project,
           months: e.autoMonths as Record<string, PinMonth>,
         }));
       setRows(list);
+      const rawMap: Record<string, PinAutoMonths> = {};
+      for (const e of j.employees) rawMap[e.id] = e.autoMonths ?? {};
+      setRawAutoMonths(rawMap);
     } catch {
       toast.error("Erro ao carregar saldos acumulados PIN");
     } finally {
@@ -551,9 +564,21 @@ export default function PinProject() {
                     )}
                   </p>
                 </div>
-                <Button variant="ghost" size="sm" className="rounded-xl shrink-0" onClick={() => { setSelectedEmpId(null); setEditingMk(null); }}>
-                  <X className="w-4 h-4" />
-                </Button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {selectedEmp.pin_project && (
+                    <Button
+                      variant="outline" size="sm"
+                      className="rounded-xl gap-1.5 text-[11px] h-8 border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                      title="Ver comprovação detalhada do cálculo do saldo"
+                      onClick={() => setProofEmpId(selectedEmp.id)}
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" /> Comprovar
+                    </Button>
+                  )}
+                  <Button variant="ghost" size="sm" className="rounded-xl shrink-0" onClick={() => { setSelectedEmpId(null); setEditingMk(null); }}>
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
               </div>
 
               <div className="flex-1 overflow-y-auto px-6 py-4 space-y-1.5">
@@ -637,6 +662,18 @@ export default function PinProject() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {proofEmpId && (() => {
+        const emp = rows.find(r => r.id === proofEmpId);
+        if (!emp) return null;
+        return (
+          <BalanceProofDrawer
+            employee={{ id: emp.id, name: emp.name, registration: emp.registration ?? "—", departments: emp.department ? { name: emp.department } : undefined }}
+            autoMonths={rawAutoMonths[emp.id] ?? {}}
+            onClose={() => setProofEmpId(null)}
+          />
+        );
+      })()}
     </motion.div>
   );
 }

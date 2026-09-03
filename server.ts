@@ -1103,6 +1103,7 @@ export async function createApp() {
           acum: number | null; extras: number; goal: number;
           recordCount: number; isComplete: boolean; isCurrentMonth: boolean;
           noSeedMode: boolean; isManualOverride?: boolean;
+          days?: { date: string; status: string; ot: number; delay: number; net: number }[];
         }> = {};
 
         // ── Projeto PIN (membro atual): mês a mês Jan/2026 → mês atual ──────────
@@ -1138,27 +1139,37 @@ export async function createApp() {
               }
             } else {
               const prefix = `${y}-${String(m).padStart(2, "0")}`;
-              const monthRecs = recs.filter(r => r.date.startsWith(prefix) && !LEAVE_FOR_PIN.has(r.status));
-              const totalExtras = monthRecs.reduce((s, r) => {
+              // NÃO filtra por LEAVE_FOR_PIN aqui: dias de férias/feriado/folga já são
+              // gravados com delay=0 (calculateWorkHours usa effExpected=0 pra qualquer
+              // status de LEAVE_STATUSES, com ou sem apontamento — ver POST/PUT
+              // /api/attendance/:employeeId/record), então excluir o dia inteiro nunca
+              // era necessário pra evitar déficit indevido. Só tinha o efeito colateral
+              // de descartar horas extras genuínas apontadas num dia de férias/feriado
+              // (ex.: servidor chamado pra trabalhar durante as férias). Ver
+              // project_pin_ferias_bug na memória para o caso que motivou a correção.
+              const monthDayRecs = recs.filter(r => r.date.startsWith(prefix));
+              const dayCalcs = monthDayRecs.map(r => {
                 let ot = (r.overtime50 || 0) + (r.overtime100 || 0);
                 // Fallback: if stored overtime = 0 but total_work > expected, derive overtime from total_work.
                 if (ot === 0 && r.total_work != null && r.total_work > empExpected) {
                   ot = r.total_work - empExpected;
                 }
-                // Déficit do dia (falta, saída antecipada, jornada incompleta) reduz as
-                // horas extras do mês — mesma regra já usada em TimeCard/espelho (extra - delay).
-                return s + ot - (r.delay || 0);
-              }, 0);
+                const delay = r.delay || 0;
+                return { date: r.date, status: r.status, ot, delay, net: ot - delay };
+              });
+              // Déficit do dia (falta, saída antecipada, jornada incompleta) reduz as
+              // horas extras do mês — mesma regra já usada em TimeCard/espelho (extra - delay).
+              const totalExtras = dayCalcs.reduce((s, d) => s + d.net, 0);
               const bankGoal = 2400; // banco de horas sempre desconta 40h/mês — bonusGoal é só p/ acompanhamento
               accumulated += totalExtras - bankGoal;
-              autoMonths[mk] = { acum: accumulated, extras: totalExtras, goal: bonusGoal, recordCount: monthRecs.length, isComplete, isCurrentMonth, noSeedMode: false };
+              autoMonths[mk] = { acum: accumulated, extras: totalExtras, goal: bonusGoal, recordCount: dayCalcs.length, isComplete, isCurrentMonth, noSeedMode: false, days: dayCalcs };
             }
 
             m++;
             if (m > 12) { m = 1; y++; }
           }
 
-          return { id: emp.id, name: emp.name, cpf: emp.cpf, department: emp.departments?.name ?? null, pin_project: true, autoMonths, hasAnySeed: true, noSeedMode: false, startMk: "JAN2026", hasDezSeed: "DEZ2025" in seeds };
+          return { id: emp.id, name: emp.name, cpf: emp.cpf, registration: emp.registration ?? null, department: emp.departments?.name ?? null, pin_project: true, autoMonths, hasAnySeed: true, noSeedMode: false, startMk: "JAN2026", hasDezSeed: "DEZ2025" in seeds };
         }
 
         // ── Não é membro atual do Projeto PIN ────────────────────────────────
