@@ -275,6 +275,11 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
   const utilDays = allDays.filter(d => { const w = new Date(d + "T12:00:00").getDay(); return w !== 0 && w !== 6; }).length;
   const prsPct   = utilDays > 0 ? Math.round(((diasTrab + diasFer + diasCert + diasVac) / utilDays) * 100) : 0;
 
+  // Déficit exibido já líquido: horas extras do período compensam faltas/jornada
+  // incompleta antes de mostrar "quanto ainda falta compensar" (Banco Atual continua
+  // usando o valor bruto — já faz essa mesma conta internamente).
+  const netDeficit = Math.max(0, totals.delay - totals.extra);
+
   const kpiH = 7;
   type KpiCard = { lbl: string; val: string; valC: RGB };
   const kpiCards: KpiCard[] = [
@@ -287,7 +292,7 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
     { lbl: "Férias",       val: String(diasVac),                                                                   valC: diasVac   > 0 ? C.blue      : C.grayLight },
     { lbl: "H. Previstas", val: toHHMM(expectedMonthly),                                                          valC: C.grayText },
     { lbl: "Trabalhadas",  val: toHHMM(totals.work),                                                              valC: C.blue     },
-    { lbl: "Déficit",      val: totals.delay > 0 ? "-" + toHHMM(totals.delay) : "—",                             valC: totals.delay > 0 ? C.red   : C.grayLight },
+    { lbl: "Déficit",      val: netDeficit > 0 ? "-" + toHHMM(netDeficit) : "—",                                 valC: netDeficit > 0 ? C.red   : C.grayLight },
     { lbl: "Banco Atual",  val: (totalAccumulatedBank >= 0 ? "+" : "") + toHHMM(Math.abs(totalAccumulatedBank)),  valC: totalAccumulatedBank >= 0 ? C.green : C.red },
     { lbl: "Presença",     val: prsPct + "%",                                                                      valC: prsPct >= 90 ? C.green : prsPct >= 75 ? C.amber : C.red },
   ];

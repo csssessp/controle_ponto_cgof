@@ -833,7 +833,13 @@ export default function TimeCard() {
 
       {/* ── KPI cards ───────────────────────────────────────────────────── */}
       {pageView === "detail" && <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
-        {[
+        {(() => {
+        // Déficit exibido já líquido: horas extras do período compensam faltas/jornada
+        // incompleta antes de mostrar "quanto ainda falta compensar". O Banco de Horas
+        // (totals.bank / totalAccumulatedBank) continua usando o valor bruto — ele já
+        // faz essa mesma conta internamente, isso é só pra exibição do card isolado.
+        const netDeficit = Math.max(0, totals.delay - totals.extra);
+        return [
           {
             label: "Horas Trabalhadas", value: toHHMM(totals.work),
             icon: Clock, color: "text-blue-600", bg: "bg-blue-50 border-blue-100",
@@ -860,10 +866,10 @@ export default function TimeCard() {
             trend: totalAccumulatedBank >= 0 ? "up" as const : "down" as const,
           },
           {
-            label: "Déficit", value: toHHMM(totals.delay),
+            label: "Déficit", value: toHHMM(netDeficit),
             icon: AlertTriangle, color: "text-red-600", bg: "bg-red-50 border-red-100",
-            valueColor: totals.delay > 0 ? "text-red-600" : undefined,
-            sub: "horas a compensar", trend: totals.delay > 0 ? "down" as const : "neutral" as const,
+            valueColor: netDeficit > 0 ? "text-red-600" : undefined,
+            sub: "horas a compensar (já descontadas as extras)", trend: netDeficit > 0 ? "down" as const : "neutral" as const,
           },
           {
             label: "Faltas", value: String(totals.absences),
@@ -892,7 +898,8 @@ export default function TimeCard() {
               </CardContent>
             </Card>
           </motion.div>
-        ))}
+        ));
+        })()}
       </div>}
 
       {/* ── PIN project card ─────────────────────────────────────────────── */}

@@ -63,7 +63,7 @@ const CHART_COLORS = ["#2563EB","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4
 type EmpReport = {
   id: string; name: string; registration: string;
   role_title?: string; departments?: { name: string };
-  totalWork: number; overtime: number; delays: number; absences: number;
+  totalWork: number; overtime: number; delays: number; netDeficit: number; absences: number;
   accBank?: number; pin_project?: boolean;
 };
 
@@ -213,7 +213,7 @@ export default function Reports() {
               return {
                 id: emp.id, name: emp.name, registration: emp.registration ?? "—",
                 role_title: emp.role_title, departments: emp.departments,
-                totalWork, overtime, delays, absences: absByEmp[emp.id] ?? 0,
+                totalWork, overtime, delays, netDeficit: Math.max(0, delays - overtime), absences: absByEmp[emp.id] ?? 0,
                 accBank, pin_project: emp.pin_project,
               };
             }
@@ -241,14 +241,14 @@ export default function Reports() {
             return {
               id: emp.id, name: emp.name, registration: emp.registration ?? "—",
               role_title: emp.role_title, departments: emp.departments,
-              totalWork, overtime, delays, absences: absByEmp[emp.id] ?? 0,
+              totalWork, overtime, delays, netDeficit: Math.max(0, delays - overtime), absences: absByEmp[emp.id] ?? 0,
               accBank, pin_project: emp.pin_project,
             };
           } catch {
             return {
               id: emp.id, name: emp.name, registration: emp.registration ?? "—",
               role_title: emp.role_title, departments: emp.departments,
-              totalWork: 0, overtime: 0, delays: 0, absences: absByEmp[emp.id] ?? 0,
+              totalWork: 0, overtime: 0, delays: 0, netDeficit: 0, absences: absByEmp[emp.id] ?? 0,
             };
           }
         })
@@ -1186,7 +1186,7 @@ export default function Reports() {
                         const totalHrs  = visible.reduce((s, r) => s + r.totalWork, 0);
                         const totalOt   = visible.reduce((s, r) => s + r.overtime, 0);
                         const totalAbs  = visible.reduce((s, r) => s + r.absences, 0);
-                        const totalDef  = visible.reduce((s, r) => s + r.delays, 0);
+                        const totalDef  = visible.reduce((s, r) => s + r.netDeficit, 0);
 
                         const rows = visible.map((r, idx) => `
                           <tr class="${idx % 2 === 1 ? 'alt' : ''}">
@@ -1197,7 +1197,7 @@ export default function Reports() {
                             <td class="mono">${toHHMM(r.totalWork)}</td>
                             <td class="mono ot">${r.overtime > 0 ? "+" + toHHMM(r.overtime) : "—"}</td>
                             <td class="mono ${r.accBank !== undefined && r.accBank >= 0 ? 'ot' : 'red'}">${r.accBank !== undefined ? ((r.accBank >= 0 ? "+" : "") + toHHMM(r.accBank)) : "—"}</td>
-                            <td class="mono ${r.delays > 0 ? 'red' : 'ok-val'}">${r.delays > 0 ? toHHMM(r.delays) : "—"}</td>
+                            <td class="mono ${r.netDeficit > 0 ? 'red' : 'ok-val'}">${r.netDeficit > 0 ? toHHMM(r.netDeficit) : "—"}</td>
                             <td class="center ${r.absences > 0 ? 'abs-val' : 'ok-val'}">${r.absences > 0 ? r.absences : "✓"}</td>
                           </tr>
                         `).join("");
@@ -1440,7 +1440,7 @@ export default function Reports() {
                                 r.name, r.role_title ?? "", r.departments?.name ?? "",
                                 toHHMM(r.totalWork), toHHMM(r.overtime),
                                 r.accBank !== undefined ? toHHMM(r.accBank) : "",
-                                toHHMM(r.delays),
+                                toHHMM(r.netDeficit),
                                 r.absences, r.pin_project ? "Sim" : "Não",
                               ].map(v => `"${String(v).replace(/"/g,'""')}"`).join(","));
                               const csv = [header.join(","), ...csvRows].join("\n");
@@ -1483,7 +1483,7 @@ export default function Reports() {
                               <td className={cn("px-5 py-3 font-mono text-xs font-semibold", r.accBank !== undefined ? (r.accBank >= 0 ? "text-emerald-600" : "text-red-600") : "text-muted-foreground")}>
                                 {r.accBank !== undefined ? ((r.accBank >= 0 ? "+" : "") + toHHMM(r.accBank)) : "—"}
                               </td>
-                              <td className="px-5 py-3 font-mono text-xs text-red-500">{r.delays > 0 ? toHHMM(r.delays) : "—"}</td>
+                              <td className="px-5 py-3 font-mono text-xs text-red-500">{r.netDeficit > 0 ? toHHMM(r.netDeficit) : "—"}</td>
                               <td className="px-5 py-3 text-center">
                                 <span className={cn("inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold", r.absences > 0 ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
                                   {r.absences}
