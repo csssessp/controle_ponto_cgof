@@ -1,8 +1,8 @@
-# Chronos Ponto — Bater Ponto (extensão de navegador)
+# Controle de Ponto CGOF (extensão de navegador)
 
 Extensão para Chrome/Edge que permite ao funcionário registrar Entrada e Saída
-do expediente com um clique, direto no Chronos Ponto. Usa a mesma conta de
-login do sistema (email/senha).
+do expediente com um clique, direto no Controle de Ponto CGOF. Usa a mesma
+conta de login do sistema (email/senha).
 
 ## Instalação (modo desenvolvedor)
 

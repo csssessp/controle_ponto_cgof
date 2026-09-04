@@ -1,11 +1,21 @@
 {
   "manifest_version": 3,
-  "name": "Chronos Ponto — Bater Ponto",
+  "name": "Controle de Ponto CGOF",
   "version": "1.0.0",
   "description": "Registra entrada e saída do expediente direto no Chronos Ponto (CGOF).",
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Bater Ponto"
+    "default_title": "Bater Ponto",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
   },
   "permissions": ["storage"],
   "host_permissions": [
