@@ -6,7 +6,7 @@ import {
   Lock, Zap, ChevronRight, Activity, Eye, EyeOff,
   Check, AlertCircle, CalendarDays, FileText, Star, AlertTriangle,
   Target, RefreshCw, UserPlus, Crown, Edit, UserCheck, Loader2,
-  Search, Download, Ban, PlayCircle,
+  Search, Download, Ban, PlayCircle, Link2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1509,6 +1509,7 @@ interface SystemUser {
   last_sign_in?: string;
   confirmed: boolean;
   active: boolean;
+  employee_id?: string | null;
 }
 
 const ROLE_CONFIG: Record<SystemRole, { label: string; description: string; icon: React.ReactNode; color: string }> = {
@@ -1545,11 +1546,12 @@ function RoleBadge({ role }: { role: SystemRole }) {
 function PanelUsers() {
   const [users, setUsers] = useState<SystemUser[]>([]);
   const [loading, setLoading] = useState(false);
+  const [employeesList, setEmployeesList] = useState<Array<{ id: string; name: string; registration: string }>>([]);
 
   // New/Edit dialog
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<SystemUser | null>(null);
-  const [form, setForm] = useState({ email: "", name: "", role: "VIEWER" as SystemRole, password: "" });
+  const [form, setForm] = useState({ email: "", name: "", role: "VIEWER" as SystemRole, password: "", employeeId: "" });
   const [saving, setSaving] = useState(false);
 
   // Delete confirm
@@ -1584,11 +1586,16 @@ function PanelUsers() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    fetch("/api/employees").then(r => r.json())
+      .then(d => setEmployeesList((d.employees || []).map((e: any) => ({ id: e.id, name: e.name, registration: e.registration }))))
+      .catch(() => {});
+  }, []);
 
   const openCreate = () => {
     setEditingUser(null);
-    setForm({ email: "", name: "", role: "VIEWER", password: "" });
+    setForm({ email: "", name: "", role: "VIEWER", password: "", employeeId: "" });
     setDialogOpen(true);
   };
 
@@ -1628,7 +1635,7 @@ function PanelUsers() {
 
   const openEdit = (u: SystemUser) => {
     setEditingUser(u);
-    setForm({ email: u.email, name: u.name, role: u.role, password: "" });
+    setForm({ email: u.email, name: u.name, role: u.role, password: "", employeeId: u.employee_id || "" });
     setDialogOpen(true);
   };
 
@@ -1642,6 +1649,7 @@ function PanelUsers() {
       const body: any = { email: form.email.trim(), name: form.name.trim(), role: form.role };
       if (!editingUser) body.password = form.password;
       else if (form.password.trim()) body.password = form.password.trim();
+      if (editingUser) body.employee_id = form.employeeId || null;
 
       const r = await fetch(url, {
         method,
@@ -1791,7 +1799,19 @@ function PanelUsers() {
                   <tr key={u.id} className={`border-b last:border-0 hover:bg-muted/20 transition-colors ${idx % 2 === 1 ? "bg-muted/10" : ""}`}>
                     <td className="px-5 py-3 font-medium">{u.name || "—"}</td>
                     <td className="px-4 py-3 text-muted-foreground">{u.email}</td>
-                    <td className="px-4 py-3"><RoleBadge role={u.role} /></td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <RoleBadge role={u.role} />
+                        {u.employee_id && (
+                          <span
+                            className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-1.5 py-0.5"
+                            title={`Vinculado a: ${employeesList.find(e => e.id === u.employee_id)?.name || u.employee_id}`}
+                          >
+                            <Link2 className="w-3 h-3" /> Vinculado
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-muted-foreground">{fmtDate(u.created_at)}</td>
                     <td className="px-4 py-3 text-muted-foreground">{fmtDate(u.last_sign_in)}</td>
                     <td className="px-4 py-3">
@@ -1915,6 +1935,26 @@ function PanelUsers() {
                 autoComplete="new-password"
               />
             </div>
+            {editingUser && (
+              <div className="space-y-1.5">
+                <Label>Vínculo com funcionário</Label>
+                <select
+                  className="w-full h-9 px-3 rounded-lg border border-input bg-transparent text-sm"
+                  value={form.employeeId}
+                  onChange={e => setForm(f => ({ ...f, employeeId: e.target.value }))}
+                >
+                  <option value="">— Nenhum (conta genérica) —</option>
+                  {employeesList.map(e => (
+                    <option key={e.id} value={e.id}>{e.name} (#{e.registration})</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {form.employeeId
+                    ? "Restringe esta conta ao próprio espelho de ponto e saldo desse funcionário (necessário pra bater ponto pela extensão)."
+                    : "Sem vínculo: conta genérica com acesso amplo de leitura (perfil Visualizador) ou de gestão, conforme o perfil acima."}
+                </p>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancelar</Button>

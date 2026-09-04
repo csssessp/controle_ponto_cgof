@@ -1844,6 +1844,7 @@ export async function createApp() {
         last_sign_in: u.last_sign_in_at || null,
         confirmed: !!u.confirmed_at,
         active: isActiveUser(u),
+        employee_id: u.app_metadata?.employee_id || null,
       }));
       res.json({ success: true, users });
     } catch (e: any) {
@@ -1885,18 +1886,46 @@ export async function createApp() {
   // Update user role and/or name/password/active
   app.patch("/api/system-users/:id", async (req, res) => {
     try {
-      const { role, name, password, active } = req.body;
+      const { role, name, password, active, employee_id } = req.body;
       const validRoles = ["ADMIN", "AUDITOR", "VIEWER"];
       const updates: any = {};
       if (name !== undefined) updates.user_metadata = { name };
-      if (role && validRoles.includes(role)) {
+
+      const wantsRoleChange = role && validRoles.includes(role);
+      const wantsEmployeeChange = employee_id !== undefined;
+      if (wantsRoleChange || wantsEmployeeChange) {
         // Merge instead of replace — app_metadata may already carry employee_id
         // (accounts auto-provisionadas para funcionários); overwriting it would
-        // silently unlink the account from its espelho de ponto.
+        // silently unlink a conta do próprio espelho de ponto sem querer.
         const { data: existing, error: getErr } = await supabase.auth.admin.getUserById(req.params.id);
         if (getErr) throw getErr;
-        updates.app_metadata = { ...(existing.user?.app_metadata || {}), system_role: role };
+        const nextMeta: any = { ...(existing.user?.app_metadata || {}) };
+        if (wantsRoleChange) nextMeta.system_role = role;
+
+        if (wantsEmployeeChange) {
+          if (employee_id) {
+            // Confere que o funcionário existe e que nenhuma OUTRA conta já
+            // reivindica o mesmo employee_id (evita dois usuários lendo/
+            // escrevendo o "próprio" espelho um do outro).
+            const { data: emp, error: empErr } = await supabase.from("employees").select("id").eq("id", employee_id).maybeSingle();
+            if (empErr) throw empErr;
+            if (!emp) return res.status(400).json({ error: "Funcionário não encontrado" });
+            const authUsers = await listAllAuthUsers();
+            const conflict = authUsers.find((u: any) => u.id !== req.params.id && u.app_metadata?.employee_id === employee_id);
+            if (conflict) return res.status(409).json({ error: `Esse funcionário já está vinculado à conta ${conflict.email}` });
+            nextMeta.employee_id = employee_id;
+          } else {
+            // A Admin API do Supabase faz MERGE de app_metadata no servidor —
+            // omitir a chave (via `delete` no objeto local) não a remove lá,
+            // só um valor explícito sobrescreve. `null` é tratado como "sem
+            // vínculo" em todo o resto do código (`app_metadata?.employee_id
+            // || null`), então não precisa apagar a chave de fato.
+            nextMeta.employee_id = null;
+          }
+        }
+        updates.app_metadata = nextMeta;
       }
+
       if (password) updates.password = password;
       if (typeof active === "boolean") updates.ban_duration = active ? "none" : BAN_FOREVER;
       const { data, error } = await supabase.auth.admin.updateUserById(req.params.id, updates);
@@ -1910,6 +1939,7 @@ export async function createApp() {
           role: data.user.app_metadata?.system_role || "VIEWER",
           confirmed: !!data.user.confirmed_at,
           active: isActiveUser(data.user),
+          employee_id: data.user.app_metadata?.employee_id || null,
         },
       });
     } catch (e: any) {
