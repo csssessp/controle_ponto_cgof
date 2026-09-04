@@ -801,6 +801,13 @@ export async function createApp() {
         status: rec?.status || "NORMAL",
         justification: rec?.justification,
         entries: [...existing, { time: hhmm, type }],
+        // Autoregistro só tem Entrada+Saída, nunca intervalo de almoço — a
+        // dedução automática de almoço em calculateWorkHours (pensada pro
+        // espelho oficial, onde 1 único par IN/OUT costuma significar
+        // "não bateu o intervalo") sempre dispararia aqui, já que um dia de
+        // autoregistro SEMPRE tem exatamente 1 par. Isso zerava (ou reduzia
+        // errado) o total trabalhado, sobretudo em jornadas curtas (2h/4h).
+        noLunch: true,
         entriesAreManual: false,
       });
       res.json({ success: true, record: full, punchedAt: hhmm, type });
