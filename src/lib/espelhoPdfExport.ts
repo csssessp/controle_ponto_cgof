@@ -636,12 +636,20 @@ export async function exportAllEspelhosPdf(
   employees: EspelhoEmployee[],
   year: number,
   month: number,
-  opts: { pinOnly?: boolean } = {},
+  opts: { pinOnly?: boolean; department?: string } = {},
   onProgress?: (current: number, total: number, label: string) => void,
 ): Promise<number> {
-  const target = opts.pinOnly ? employees.filter(e => e.pin_project) : employees;
+  const target = opts.pinOnly
+    ? employees.filter(e => e.pin_project)
+    : opts.department
+      ? employees.filter(e => e.departments?.name === opts.department)
+      : employees;
   if (!target.length) {
-    throw new Error(opts.pinOnly ? "Nenhum funcionário com Projeto PIN" : "Nenhum funcionário cadastrado");
+    throw new Error(
+      opts.pinOnly ? "Nenhum funcionário com Projeto PIN"
+      : opts.department ? `Nenhum funcionário no setor "${opts.department}"`
+      : "Nenhum funcionário cadastrado"
+    );
   }
 
   const logoDataUrl = await loadLogoDataUrl();
@@ -659,7 +667,7 @@ export async function exportAllEspelhosPdf(
   if (!empDataList.length) throw new Error("Nenhum dado disponível");
 
   const doc = await buildAllEspelhosPdf(empDataList);
-  const suffix = opts.pinOnly ? "PIN" : "TODOS";
+  const suffix = opts.pinOnly ? "PIN" : opts.department ? opts.department.replace(/[^a-zA-Z0-9]+/g, "_") : "TODOS";
   doc.save(`Espelho_${suffix}_${MONTHS[month - 1]}_${year}.pdf`);
   return empDataList.length;
 }

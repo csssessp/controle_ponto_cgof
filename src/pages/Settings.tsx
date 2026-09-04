@@ -6,7 +6,7 @@ import {
   Lock, Zap, ChevronRight, Activity, Eye, EyeOff,
   Check, AlertCircle, CalendarDays, FileText, Star, AlertTriangle,
   Target, RefreshCw, UserPlus, Crown, Edit, UserCheck, Loader2,
-  Search, Download, Ban, PlayCircle, Link2,
+  Search, Download, Ban, PlayCircle, Link2, FolderKanban,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1321,11 +1321,11 @@ function PanelReports() {
     }
   };
 
-  const handleExportAllPdf = async (pinOnly: boolean) => {
+  const handleExportAllPdf = async (opts: { pinOnly?: boolean; department?: string } = {}) => {
     setPdfBusy(true);
     setPdfProgress({ current: 0, total: employeesRaw.length, label: "Preparando…" });
     try {
-      const count = await exportAllEspelhosPdf(employeesRaw, pdfYear, pdfMonth, { pinOnly }, (current, total, label) => {
+      const count = await exportAllEspelhosPdf(employeesRaw, pdfYear, pdfMonth, opts, (current, total, label) => {
         setPdfProgress({ current, total, label });
       });
       toast.success(`PDF com ${count} funcionário${count !== 1 ? "s" : ""} exportado com sucesso`);
@@ -1393,12 +1393,16 @@ function PanelReports() {
           <Button variant="outline" size="sm" className="rounded-xl h-9" onClick={handleExportSinglePdf} disabled={pdfBusy || !pdfEmpId}>
             <FileText className="w-3.5 h-3.5 mr-2" /> Funcionário
           </Button>
-          <Button variant="outline" size="sm" className="rounded-xl h-9" onClick={() => handleExportAllPdf(false)} disabled={pdfBusy || employeesRaw.length === 0}>
+          <Button variant="outline" size="sm" className="rounded-xl h-9" onClick={() => handleExportAllPdf()} disabled={pdfBusy || employeesRaw.length === 0}>
             <Download className="w-3.5 h-3.5 mr-2" /> Todos
           </Button>
-          <Button variant="outline" size="sm" className="rounded-xl h-9 border-indigo-200 text-indigo-700 hover:bg-indigo-50" onClick={() => handleExportAllPdf(true)} disabled={pdfBusy || employeesRaw.length === 0}>
+          <Button variant="outline" size="sm" className="rounded-xl h-9 border-indigo-200 text-indigo-700 hover:bg-indigo-50" onClick={() => handleExportAllPdf({ pinOnly: true })} disabled={pdfBusy || employeesRaw.length === 0}>
             <span className="w-3.5 h-3.5 rounded flex items-center justify-center bg-indigo-600 text-white text-[9px] font-black shrink-0 mr-2">P</span>
             Projeto PIN
+          </Button>
+          <Button variant="outline" size="sm" className="rounded-xl h-9 border-violet-200 text-violet-700 hover:bg-violet-50" onClick={() => handleExportAllPdf({ department: "Projeto/Etapa" })} disabled={pdfBusy || employeesRaw.length === 0}>
+            <FolderKanban className="w-3.5 h-3.5 mr-2" />
+            Projeto/Etapa
           </Button>
         </div>
 
