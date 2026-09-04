@@ -1646,14 +1646,30 @@ export async function createApp() {
       const from = `${y}-${String(m).padStart(2, "0")}-01`;
       const lastDay = new Date(Number(y), Number(m), 0).getDate();
       const to = `${y}-${String(m).padStart(2, "0")}-${lastDay}`;
-      const { data, error } = await supabase
-        .from("attendance_records")
-        .select("id, date, status, total_work, employee_id, time_entries(id, time, type)")
-        .gte("date", from)
-        .lte("date", to)
-        .order("date");
-      if (error) throw error;
-      res.json({ success: true, records: data || [] });
+      // Paginado: com ~57 funcionários x ~22 dias úteis, o total de linhas do
+      // mês facilmente passa do limite padrão do PostgREST (1000), que corta
+      // silenciosamente o resto sem erro — mesmo cuidado já tomado em
+      // /api/pin-project/auto-balances (ver comentário lá).
+      let records: any[] = [];
+      {
+        let from0 = 0;
+        const PAGE = 1000;
+        for (let page = 0; page < 20; page++) {
+          const { data: chunk, error: chunkErr } = await supabase
+            .from("attendance_records")
+            .select("id, date, status, total_work, employee_id, time_entries(id, time, type)")
+            .gte("date", from)
+            .lte("date", to)
+            .order("date")
+            .range(from0, from0 + PAGE - 1);
+          if (chunkErr) throw chunkErr;
+          if (!chunk || chunk.length === 0) break;
+          records = records.concat(chunk);
+          if (chunk.length < PAGE) break;
+          from0 += PAGE;
+        }
+      }
+      res.json({ success: true, records });
     } catch (e: any) {
       respondError(res, e);
     }

@@ -41,21 +41,6 @@ function toHHMM(min: number) {
   const a = Math.abs(min);
   return (min < 0 ? "-" : "") + String(Math.floor(a / 60)).padStart(2, "0") + ":" + String(a % 60).padStart(2, "0");
 }
-function parseTime(t: string) { return t.includes("T") ? t.split("T")[1].substring(0, 5) : t.substring(0, 5); }
-function timeToMin(t: string) { const [h, m] = t.split(":").map(Number); return h * 60 + m; }
-
-function calcNetMinutes(entries: Array<{ time: string; type: string }>, lunch: number): number {
-  const sorted = [...entries].sort((a, b) => parseTime(a.time).localeCompare(parseTime(b.time)));
-  let raw = 0, pairs = 0;
-  for (let i = 0; i + 1 < sorted.length; i += 2) {
-    if (sorted[i]?.type === "IN" && sorted[i + 1]?.type === "OUT") {
-      raw += timeToMin(parseTime(sorted[i + 1].time)) - timeToMin(parseTime(sorted[i].time));
-      pairs++;
-    }
-  }
-  return pairs === 1 && lunch > 0 ? Math.max(0, raw - lunch) : raw;
-}
-
 function workingDaysInMonth(year: number, month: number): number {
   let count = 0;
   const d = new Date(year, month - 1, 1);
@@ -165,10 +150,15 @@ export default function Dashboard() {
   const empStats = useMemo(() => active.map(emp => {
     const recs = byEmp[emp.id] || [];
     const expected = emp.schedules?.expected_work ?? 480;
-    const lunch    = emp.schedules?.lunch_minutes  ?? 60;
     let workedMin = 0, absences = 0, vacations = 0, certs = 0;
     for (const r of recs) {
-      if (r.status === "NORMAL" || r.status === "COMPENSATION") workedMin += calcNetMinutes(r.time_entries, lunch);
+      // Confia no total_work já calculado e persistido pelo servidor (mesmo
+      // valor que o Espelho de Ponto mostra) — nunca reimplementar o cálculo
+      // de minutos líquidos aqui a partir das marcações cruas: a lógica de
+      // pareamento IN/OUT + desconto de almoço tem casos de borda (jornada
+      // com mais de 1 intervalo, marcação ímpar, ajuste manual) que só o
+      // servidor resolve corretamente.
+      if (r.status === "NORMAL" || r.status === "COMPENSATION") workedMin += r.total_work || 0;
       else if (r.status === "ABSENCE")     absences++;
       else if (r.status === "VACATION")    vacations++;
       else if (r.status === "CERTIFICATE") certs++;
