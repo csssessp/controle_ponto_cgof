@@ -102,6 +102,21 @@ function parseToISO(dateStr: string): string | null {
   return null;
 }
 
+// Vercel roda em UTC — sem isso, bater ponto depois das ~21h em Brasília
+// (UTC-3) gravaria a marcação no dia seguinte. Usado só pelo autoregistro de
+// ponto (extensão de navegador); demais usos de `new Date()` no arquivo são
+// de granularidade mensal e não sofrem esse problema na prática.
+const SP_TZ = "America/Sao_Paulo";
+function nowInSaoPaulo(): { isoDate: string; hhmm: string } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: SP_TZ,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date());
+  const get = (t: string) => parts.find(p => p.type === t)!.value;
+  return { isoDate: `${get("year")}-${get("month")}-${get("day")}`, hhmm: `${get("hour")}:${get("minute")}` };
+}
+
 function minutesToHHMM(min: number): string {
   const h = Math.floor(Math.abs(min) / 60);
   const m = Math.abs(min) % 60;
@@ -168,6 +183,71 @@ async function getEmpSchedule(employeeId: string): Promise<{ expected: number; l
     lunch = Math.max(0, (eh * 60 + em) - (sh * 60 + sm) - expected);
   }
   return { expected, lunch };
+}
+
+// Persistência compartilhada de um dia de apontamento — usada tanto pela
+// edição manual (POST /api/attendance/:employeeId/record) quanto pelo
+// autoregistro de ponto (POST /api/attendance/punch). `entries: undefined`
+// não mexe nas marcações existentes; `entriesAreManual` distingue no BD uma
+// correção de admin (`is_manual: true`) de uma marcação real da extensão.
+async function upsertAttendanceDay(
+  employeeId: string,
+  isoDate: string,
+  opts: {
+    status?: string;
+    justification?: string | null;
+    entries?: Array<{ time: string; type: string }>;
+    noLunch?: boolean;
+    entriesAreManual: boolean;
+  },
+) {
+  const sched = await getEmpSchedule(employeeId);
+  const isLeave = LEAVE_STATUSES.includes(opts.status || "");
+  const effExpected = (isLeave && opts.entries?.length) ? 0 : sched.expected;
+  const effectiveNoLunch = !!opts.noLunch || isLeave;
+  const hours = opts.entries?.length
+    ? calculateWorkHours(opts.entries, effExpected, sched.lunch, effectiveNoLunch)
+    : { totalWorkMinutes: 0, overtime50Minutes: 0, overtime100Minutes: 0, nightShiftMinutes: 0, delayMinutes: 0 };
+
+  const { data: rec, error: recErr } = await supabase
+    .from("attendance_records")
+    .upsert({
+      employee_id: employeeId,
+      date: isoDate,
+      status: opts.status || "NORMAL",
+      justification: opts.justification || null,
+      total_work: hours.totalWorkMinutes,
+      overtime50: hours.overtime50Minutes,
+      overtime100: hours.overtime100Minutes,
+      night_shift: hours.nightShiftMinutes,
+      delay: hours.delayMinutes,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "employee_id,date" })
+    .select()
+    .single();
+  if (recErr) throw recErr;
+
+  if (opts.entries !== undefined) {
+    await supabase.from("time_entries").delete().eq("record_id", rec.id);
+    if (opts.entries.length > 0) {
+      const rows = opts.entries.map((e) => ({
+        record_id: rec.id,
+        time: `${isoDate}T${e.time}:00`,
+        type: e.type,
+        original: e.time,
+        is_manual: opts.entriesAreManual,
+      }));
+      const { error: entErr } = await supabase.from("time_entries").insert(rows);
+      if (entErr) throw entErr;
+    }
+  }
+
+  const { data: full } = await supabase
+    .from("attendance_records")
+    .select("*, time_entries(*)")
+    .eq("id", rec.id)
+    .single();
+  return full;
 }
 
 async function getOrCreateOrg(): Promise<string> {
@@ -247,8 +327,14 @@ export async function createApp() {
       if (user?.role !== "ADMIN") return res.status(403).json({ error: "Acesso negado: requer perfil ADMIN" });
       return next();
     }
+    // Autoregistro de ponto (extensão de navegador): qualquer conta vinculada
+    // a um employee_id pode bater a própria marcação — não abre nenhum outro
+    // caminho de escrita. O handler confere `req.user.employeeId` de novo
+    // como segunda camada.
+    const isSelfPunch = req.method === "POST" && req.path === "/attendance/punch" && !!user?.employeeId;
+
     const isWrite = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
-    if (isWrite && !["ADMIN", "AUDITOR"].includes(user?.role || "")) {
+    if (isWrite && !isSelfPunch && !["ADMIN", "AUDITOR"].includes(user?.role || "")) {
       return res.status(403).json({ error: "Acesso negado: permissão insuficiente para modificar dados" });
     }
 
@@ -267,6 +353,8 @@ export async function createApp() {
         "/pin-project/auto-balances",
         "/pin-project/goals",
         "/system/last-imported-month",
+        "/attendance/punch",
+        "/attendance/punch/status",
       ]);
       if (!selfScopedPaths.has(req.path)) {
         return res.status(403).json({ error: "Acesso restrito ao seu próprio espelho de ponto" });
@@ -665,54 +753,95 @@ export async function createApp() {
       const isoDate = parseToISO(date);
       if (!isoDate) return res.status(400).json({ error: "Invalid date" });
 
-      // upsert record
-      const sched = await getEmpSchedule(employeeId);
-      const isLeave = LEAVE_STATUSES.includes(status || "");
-      const effExpected = (isLeave && entries?.length) ? 0 : sched.expected;
-      // For leave days, never deduct lunch (all worked hours count as overtime)
-      const effectiveNoLunch = !!no_lunch || isLeave;
-      const hours = entries?.length ? calculateWorkHours(entries, effExpected, sched.lunch, effectiveNoLunch) : { totalWorkMinutes:0, overtime50Minutes:0, overtime100Minutes:0, nightShiftMinutes:0, delayMinutes:0 };
-      const { data: rec, error: recErr } = await supabase
-        .from("attendance_records")
-        .upsert({
-          employee_id: employeeId,
-          date: isoDate,
-          status: status || "NORMAL",
-          justification: justification || null,
-          total_work: hours.totalWorkMinutes,
-          overtime50: hours.overtime50Minutes,
-          overtime100: hours.overtime100Minutes,
-          night_shift: hours.nightShiftMinutes,
-          delay: hours.delayMinutes,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: "employee_id,date" })
-        .select()
-        .single();
-      if (recErr) throw recErr;
+      const full = await upsertAttendanceDay(employeeId, isoDate, {
+        status, justification, entries, noLunch: no_lunch, entriesAreManual: true,
+      });
+      res.json({ success: true, record: full });
+    } catch (e: any) {
+      respondError(res, e);
+    }
+  });
 
-      // replace entries if provided
-      if (entries !== undefined) {
-        await supabase.from("time_entries").delete().eq("record_id", rec.id);
-        if (entries.length > 0) {
-          const rows = entries.map((e: any) => ({
-            record_id: rec.id,
-            time: `${isoDate}T${e.time}:00`,
-            type: e.type,
-            original: e.time,
-            is_manual: true,
-          }));
-          const { error: entErr } = await supabase.from("time_entries").insert(rows);
-          if (entErr) throw entErr;
-        }
-      }
+  // Autoregistro de ponto (extensão de navegador) — sempre o próprio
+  // funcionário (req.user.employeeId), sempre hora do servidor (nunca do
+  // body), só 2 marcações/dia (Entrada e Saída).
+  app.post("/api/attendance/punch", async (req, res) => {
+    try {
+      const user = (req as any).user as { employeeId?: string };
+      if (!user?.employeeId) return res.status(403).json({ error: "Conta não vinculada a um funcionário" });
+      const type = req.body?.type;
+      if (type !== "IN" && type !== "OUT") return res.status(400).json({ error: "type deve ser IN ou OUT" });
 
-      // return full record with entries
-      const { data: full } = await supabase
+      const employeeId = user.employeeId;
+      const { isoDate, hhmm } = nowInSaoPaulo();
+
+      const { data: rec } = await supabase
         .from("attendance_records")
         .select("*, time_entries(*)")
-        .eq("id", rec.id)
-        .single();
-      res.json({ success: true, record: full });
+        .eq("employee_id", employeeId)
+        .eq("date", isoDate)
+        .maybeSingle();
+
+      if (rec && LEAVE_STATUSES.includes(rec.status)) {
+        return res.status(409).json({ error: `Dia já registrado como ${rec.status}. Ajuste manual necessário.` });
+      }
+
+      const existing = (rec?.time_entries || [])
+        .slice()
+        .sort((a: any, b: any) => a.time.localeCompare(b.time))
+        .map((e: any) => ({ time: e.original, type: e.type }));
+      const inE = existing.find((e: any) => e.type === "IN");
+      const outE = existing.find((e: any) => e.type === "OUT");
+
+      if (type === "IN" && inE) return res.status(409).json({ error: "Entrada já registrada hoje", checkedInAt: inE.time });
+      if (type === "OUT" && !inE) return res.status(409).json({ error: "Registre a entrada antes da saída" });
+      if (type === "OUT" && outE) return res.status(409).json({ error: "Saída já registrada hoje", checkedOutAt: outE.time });
+
+      const full = await upsertAttendanceDay(employeeId, isoDate, {
+        status: rec?.status || "NORMAL",
+        justification: rec?.justification,
+        entries: [...existing, { time: hhmm, type }],
+        entriesAreManual: false,
+      });
+      res.json({ success: true, record: full, punchedAt: hhmm, type });
+    } catch (e: any) {
+      respondError(res, e);
+    }
+  });
+
+  // Estado do dia pra UI da extensão (o que já foi batido, o que falta).
+  app.get("/api/attendance/punch/status", async (req, res) => {
+    try {
+      const user = (req as any).user as { employeeId?: string };
+      if (!user?.employeeId) return res.status(403).json({ error: "Conta não vinculada a um funcionário" });
+      const employeeId = user.employeeId;
+      const { isoDate } = nowInSaoPaulo();
+
+      const [{ data: emp }, { data: rec }] = await Promise.all([
+        supabase.from("employees").select("name").eq("id", employeeId).single(),
+        supabase.from("attendance_records").select("*, time_entries(*)")
+          .eq("employee_id", employeeId).eq("date", isoDate).maybeSingle(),
+      ]);
+
+      const entries = rec?.time_entries || [];
+      const inE = entries.find((e: any) => e.type === "IN");
+      const outE = entries.find((e: any) => e.type === "OUT");
+      const isLeave = rec && LEAVE_STATUSES.includes(rec.status);
+
+      res.json({
+        success: true,
+        employeeName: emp?.name ?? null,
+        date: isoDate,
+        checkedIn: !!inE,
+        checkedInAt: inE?.original ?? null,
+        checkedOut: !!outE,
+        checkedOutAt: outE?.original ?? null,
+        canCheckIn: !isLeave && !inE,
+        canCheckOut: !isLeave && !!inE && !outE,
+        message: isLeave
+          ? `Dia registrado como ${rec.status}`
+          : (inE && outE ? "Ponto do dia já registrado (entrada e saída)." : null),
+      });
     } catch (e: any) {
       respondError(res, e);
     }
@@ -1657,7 +1786,7 @@ export async function createApp() {
         for (let page = 0; page < 20; page++) {
           const { data: chunk, error: chunkErr } = await supabase
             .from("attendance_records")
-            .select("id, date, status, total_work, employee_id, time_entries(id, time, type)")
+            .select("id, date, status, total_work, overtime50, overtime100, delay, employee_id, time_entries(id, time, type)")
             .gte("date", from)
             .lte("date", to)
             .order("date")

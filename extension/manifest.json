@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Chronos Ponto — Bater Ponto",
+  "version": "1.0.0",
+  "description": "Registra entrada e saída do expediente direto no Chronos Ponto (CGOF).",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Bater Ponto"
+  },
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://controle-ponto-cgof.vercel.app/*",
+    "https://yhwiertvbkeirvlieuag.supabase.co/*"
+  ]
+}

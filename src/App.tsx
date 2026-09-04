@@ -19,6 +19,7 @@ import {
   Eye,
   EyeOff,
   Target,
+  FolderKanban,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -36,6 +37,7 @@ import SettingsPage from './pages/Settings';
 import DashboardPage from './pages/Dashboard';
 import LoginPage from './pages/Login';
 import PinProject from './pages/PinProject';
+import ProjetoEtapa from './pages/ProjetoEtapa';
 
 
 const queryClient = new QueryClient();
@@ -194,6 +196,49 @@ function Sidebar() {
     { title: 'Upload Ponto', path: '/upload', icon: FileUp },
     { title: 'Configurações', path: '/settings', icon: Settings },
   ];
+  // Separado dos demais por um divisor — setor à parte (jornada 2h/4h/6h,
+  // fora do fluxo normal de import/PIN), não é "mais um item" da lista.
+  const navItemsExtra = [
+    { title: 'Projeto/Etapa', path: '/projeto-etapa', icon: FolderKanban },
+  ];
+
+  const renderNavItem = (item: { title: string; path: string; icon: typeof LayoutDashboard }) => {
+    const isActive = location.pathname === item.path;
+    return (
+      <Link
+        key={item.path}
+        to={item.path}
+        className={cn(
+          "flex items-center h-12 rounded-xl transition-colors duration-200 group relative",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30",
+          sidebarOpen ? "px-3" : "justify-center px-0",
+          sidebarOpen && isActive && "bg-white/12",
+          !isActive && "hover:bg-white/5"
+        )}
+      >
+        <span className={cn(
+          "flex items-center justify-center shrink-0 rounded-lg transition-colors duration-200",
+          !sidebarOpen && "w-10 h-10",
+          !sidebarOpen && isActive && "bg-white/12"
+        )}>
+          <item.icon
+            className={cn("w-[22px] h-[22px]", isActive ? "text-white" : "text-white/55 group-hover:text-white")}
+            strokeWidth={2}
+          />
+        </span>
+        {sidebarOpen && (
+          <span className={cn("ml-3 text-sm truncate", isActive ? "font-semibold text-white" : "font-medium text-white/70 group-hover:text-white")}>
+            {item.title}
+          </span>
+        )}
+        {!sidebarOpen && (
+          <div className="absolute left-full ml-3 bg-[#1a3a6b] text-white px-2.5 py-1.5 rounded-lg text-xs opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap shadow-lg z-50 border border-white/10">
+            {item.title}
+          </div>
+        )}
+      </Link>
+    );
+  };
 
   return (
     <>
@@ -238,43 +283,9 @@ function Sidebar() {
         </button>
 
         <nav className="flex-1 px-3 py-3 space-y-1 overflow-y-auto overflow-x-hidden">
-          {navItems.map((item) => {
-            const isActive = location.pathname === item.path;
-            return (
-              <Link
-                key={item.path}
-                to={item.path}
-                className={cn(
-                  "flex items-center h-12 rounded-xl transition-colors duration-200 group relative",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30",
-                  sidebarOpen ? "px-3" : "justify-center px-0",
-                  sidebarOpen && isActive && "bg-white/12",
-                  !isActive && "hover:bg-white/5"
-                )}
-              >
-                <span className={cn(
-                  "flex items-center justify-center shrink-0 rounded-lg transition-colors duration-200",
-                  !sidebarOpen && "w-10 h-10",
-                  !sidebarOpen && isActive && "bg-white/12"
-                )}>
-                  <item.icon
-                    className={cn("w-[22px] h-[22px]", isActive ? "text-white" : "text-white/55 group-hover:text-white")}
-                    strokeWidth={2}
-                  />
-                </span>
-                {sidebarOpen && (
-                  <span className={cn("ml-3 text-sm truncate", isActive ? "font-semibold text-white" : "font-medium text-white/70 group-hover:text-white")}>
-                    {item.title}
-                  </span>
-                )}
-                {!sidebarOpen && (
-                  <div className="absolute left-full ml-3 bg-[#1a3a6b] text-white px-2.5 py-1.5 rounded-lg text-xs opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap shadow-lg z-50 border border-white/10">
-                    {item.title}
-                  </div>
-                )}
-              </Link>
-            );
-          })}
+          {navItems.map(renderNavItem)}
+          <div className={cn("my-2 border-t border-white/10", !sidebarOpen && "mx-2")} />
+          {navItemsExtra.map(renderNavItem)}
         </nav>
 
         <div className={cn("shrink-0 px-4 py-3 border-t border-white/10 text-[10px] text-white/30 font-semibold uppercase tracking-wider", !sidebarOpen && "text-center px-0")}>
@@ -543,6 +554,7 @@ export default function App() {
           <Route path="/employees" element={<RequireAuth><RequireFullAccess><MainLayout><Employees /></MainLayout></RequireFullAccess></RequireAuth>} />
           <Route path="/ponto" element={<RequireAuth><MainLayout><TimeCard /></MainLayout></RequireAuth>} />
           <Route path="/pin" element={<RequireAuth><RequireFullAccess><MainLayout><PinProject /></MainLayout></RequireFullAccess></RequireAuth>} />
+          <Route path="/projeto-etapa" element={<RequireAuth><RequireFullAccess><MainLayout><ProjetoEtapa /></MainLayout></RequireFullAccess></RequireAuth>} />
           <Route path="/settings" element={<RequireAuth><RequireFullAccess><MainLayout><SettingsPage /></MainLayout></RequireFullAccess></RequireAuth>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

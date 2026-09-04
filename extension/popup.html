@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<title>Bater Ponto</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    width: 300px;
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    background: #f8fafc;
+    color: #0f172a;
+  }
+  header {
+    background: #0f2044;
+    color: #fff;
+    padding: 14px 16px;
+  }
+  header h1 { font-size: 14px; margin: 0; font-weight: 700; }
+  header p { font-size: 11px; margin: 2px 0 0; color: #a8b3cc; }
+  main { padding: 16px; }
+  label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #334155; }
+  input {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+  input:focus { outline: 2px solid #0f2044; outline-offset: 1px; }
+  button {
+    width: 100%;
+    padding: 10px;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  #login-submit { background: #0f2044; color: #fff; }
+  #login-submit:disabled { opacity: 0.6; cursor: default; }
+  #punch-btn { padding: 14px; font-size: 14px; }
+  #punch-btn.in { background: #15803d; color: #fff; }
+  #punch-btn.out { background: #dc2626; color: #fff; }
+  #punch-btn:disabled { background: #cbd5e1; color: #64748b; cursor: default; }
+  .error {
+    background: #fef2f2;
+    color: #b91c1c;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    margin-bottom: 12px;
+    display: none;
+  }
+  .hidden { display: none !important; }
+  .emp-name { font-size: 15px; font-weight: 700; margin: 0 0 2px; }
+  .emp-date { font-size: 12px; color: #64748b; margin: 0 0 14px; }
+  .status-line {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .status-line span:last-child { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .status-msg { font-size: 12px; color: #64748b; margin: 12px 0; text-align: center; }
+  .signout { display: block; text-align: center; font-size: 11px; color: #94a3b8; margin-top: 14px; text-decoration: underline; cursor: pointer; background: none; border: none; width: auto; padding: 0; font-weight: 400; }
+  .spinner { text-align: center; font-size: 12px; color: #64748b; padding: 20px 0; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Chronos Ponto</h1>
+    <p>Registro de Entrada e Saída</p>
+  </header>
+  <main>
+    <div id="loading" class="spinner">Carregando…</div>
+
+    <form id="login-view" class="hidden">
+      <div id="login-error" class="error"></div>
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username" placeholder="nome@exemplo.com" required />
+      <label for="password">Senha</label>
+      <input id="password" type="password" autocomplete="current-password" placeholder="••••••••" required />
+      <button id="login-submit" type="submit">Entrar</button>
+    </form>
+
+    <div id="punch-view" class="hidden">
+      <div id="punch-error" class="error"></div>
+      <p class="emp-name" id="emp-name">—</p>
+      <p class="emp-date" id="emp-date">—</p>
+      <div class="status-line"><span>Entrada</span><span id="in-time">—</span></div>
+      <div class="status-line"><span>Saída</span><span id="out-time">—</span></div>
+      <p class="status-msg hidden" id="punch-msg"></p>
+      <div style="margin-top:14px;">
+        <button id="punch-btn" type="button" disabled>—</button>
+      </div>
+      <button id="signout" class="signout" type="button">Sair da conta</button>
+    </div>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
