@@ -368,7 +368,8 @@ function renderEmpToDoc(doc: jsPDF, opts: PdfOptions): void {
 
     const nightMin = calcNightMinutes(sorted);
     const { net, ot, deficit } = calc;
-    const dayBank  = net - (emp.schedules?.expected_work ?? 480);
+    const isLeaveDay = LEAVE_STATUSES.includes(rec.status);
+    const dayBank  = net - (isLeaveDay ? 0 : (emp.schedules?.expected_work ?? 480));
     const sm = STATUS_PDF[rec.status] || { label: rec.status, color: C.grayText, bg: C.grayBg };
 
     return [

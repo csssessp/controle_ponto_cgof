@@ -1174,7 +1174,16 @@ export async function createApp() {
 
         // ── Não é membro atual do Projeto PIN ────────────────────────────────
         // Se aparece na planilha histórica (ex-membro ou linha informativa),
-        // mostra só Jan–Jul/26 estático, sem meta/dedução (não tem cota hoje).
+        // usa os dados estáticos de Jan–Jul/26, sem meta/dedução (não tem cota
+        // hoje). Dali em diante (Ago/26+), continua acumulando com o espelho
+        // de ponto real — extras − déficit, sem excluir dia por status (mesma
+        // regra e mesmo motivo do Projeto PIN, ver project_pin_ferias_bug na
+        // memória). Sem essa continuação, quem sai da lista de cota do PIN mas
+        // segue trabalhando normalmente ficava travado em Jul/26 pra sempre
+        // nesse endpoint — mesmo tendo apontamento real depois — enquanto o
+        // Espelho de Ponto (TimeCard.tsx) já calculava esse saldo por conta
+        // própria, direto do histórico de marcações. Essa era a única lacuna
+        // que fazia os dois divergirem.
         if (hist) {
           let accumulated = hist.saldoDez ?? 0;
           for (const abbr of ["JAN","FEV","MAR","ABR","MAI","JUN","JUL"] as const) {
@@ -1186,6 +1195,22 @@ export async function createApp() {
             else if (delta !== null) accumulated += delta;
             const hasData = hasOverride || delta !== null;
             autoMonths[mk] = { acum: hasData ? accumulated : null, extras: 0, goal: PIN_MONTH_GOALS[m] ?? 2400, recordCount: 0, isComplete: true, isCurrentMonth: false, noSeedMode: false, isManualOverride: hasOverride };
+          }
+          let hy = 2026, hm = 8;
+          while (hy < currentYear || (hy === currentYear && hm <= currentMonth)) {
+            const prefix = `${hy}-${String(hm).padStart(2, "0")}`;
+            const mk = `${PIN_MONTH_ABBR[hm]}${hy}`;
+            const monthRecs = recs.filter(r => r.date.startsWith(prefix));
+            const totalExtras = monthRecs.reduce((s, r) => {
+              let ot = (r.overtime50 || 0) + (r.overtime100 || 0);
+              if (ot === 0 && r.total_work != null && r.total_work > empExpected) ot = r.total_work - empExpected;
+              return s + ot - (r.delay || 0);
+            }, 0);
+            const hasOverride = mk in seeds;
+            if (hasOverride) accumulated = seeds[mk]; else accumulated += totalExtras;
+            const isCurrentMonth = (hy === currentYear && hm === currentMonth);
+            autoMonths[mk] = { acum: accumulated, extras: totalExtras, goal: PIN_MONTH_GOALS[hm] ?? 2400, recordCount: monthRecs.length, isComplete: !isCurrentMonth, isCurrentMonth, noSeedMode: false, isManualOverride: hasOverride };
+            hm++; if (hm > 12) { hm = 1; hy++; }
           }
           return { id: emp.id, name: emp.name, cpf: emp.cpf, department: emp.departments?.name ?? null, pin_project: false, autoMonths, hasAnySeed: Object.keys(seeds).length > 0, noSeedMode: false, startMk: null, hasDezSeed: false };
         }

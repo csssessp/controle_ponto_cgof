@@ -16,6 +16,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, PieChart, Pie, Cell,
 } from "recharts";
+import { fetchPinAutoBalances, pinAccumFor, type PinAutoMonths } from "@/src/lib/pinHistoricalData";
 
 /* ── Types ─────────────────────────────────────────────────────────────────── */
 type Emp = {
@@ -102,25 +103,42 @@ export default function Dashboard() {
   const now = new Date();
   const [year, setYear]   = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
+  const [monthReady, setMonthReady] = useState(false);
   const [employees, setEmployees] = useState<Emp[]>([]);
   const [attendance, setAttendance] = useState<AttRec[]>([]);
+  const [autoBalances, setAutoBalances] = useState<Record<string, PinAutoMonths>>({});
   const [loading, setLoading] = useState(true);
   const [tableSearch, setTableSearch] = useState("");
+
+  // Ao abrir o Dashboard, ancora no ÚLTIMO MÊS COM DADOS IMPORTADOS (mesmo
+  // endpoint usado por Relatórios) — nunca no mês corrente "ao vivo", que
+  // pode ainda não ter nenhum apontamento (ex.: virou o mês e ninguém
+  // importou o espelho de Setembro ainda, então mostra Agosto).
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/system/last-imported-month").then(r => r.json())
+      .then(j => { if (!cancelled && j?.year && j?.month) { setYear(j.year); setMonth(j.month); } })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setMonthReady(true); });
+    return () => { cancelled = true; };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [er, ar] = await Promise.all([
+      const [er, ar, autoBal] = await Promise.all([
         fetch("/api/employees").then(r => r.json()),
         fetch(`/api/attendance-bulk?year=${year}&month=${month}`).then(r => r.json()),
+        fetchPinAutoBalances(),
       ]);
       setEmployees(er.employees || []);
       setAttendance(ar.records || []);
+      setAutoBalances(autoBal);
     } catch (e: any) { toast.error("Erro: " + e.message); }
     finally { setLoading(false); }
   }, [year, month]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (monthReady) load(); }, [load, monthReady]);
 
   const prevMonth = () => { if (month === 1) { setYear(y => y - 1); setMonth(12); } else setMonth(m => m - 1); };
   const nextMonth = () => { if (month === 12) { setYear(y => y + 1); setMonth(1); } else setMonth(m => m + 1); };
@@ -156,20 +174,24 @@ export default function Dashboard() {
       else if (r.status === "CERTIFICATE") certs++;
     }
     const expectedSoFar = daysSoFar * expected;
-    const delta = workedMin - expectedSoFar;
-    const pct   = expectedSoFar > 0 ? Math.round((workedMin / expectedSoFar) * 100) : 100;
-    return { emp, workedMin, expectedSoFar, delta, pct, absences, vacations, certs };
-  }), [active, byEmp, daysSoFar]);
+    // Banco de horas REAL — mesma fonte de verdade usada em Relatórios,
+    // PinProject e no Espelho de Ponto (extras − déficit, com meta fixa de
+    // 40h/mês descontada só pra quem é do Projeto PIN). Nunca reimplementar
+    // esse cálculo aqui — ver /api/pin-project/auto-balances em server.ts.
+    const bank  = pinAccumFor(emp.id, year, month, autoBalances);
+    return { emp, workedMin, expectedSoFar, bank, absences, vacations, certs };
+  }), [active, byEmp, daysSoFar, autoBalances, year, month]);
 
-  const positiveCount = empStats.filter(s => s.delta >= 0).length;
-  const negativeCount = empStats.filter(s => s.delta  < 0).length;
+  const positiveCount = empStats.filter(s => s.bank !== null && s.bank >= 0).length;
+  const negativeCount = empStats.filter(s => s.bank !== null && s.bank  < 0).length;
 
   const complianceByDept = useMemo(() => {
     const depts: Record<string, { name: string; positive: number; negative: number }> = {};
-    for (const { emp, delta } of empStats) {
+    for (const { emp, bank } of empStats) {
+      if (bank === null) continue;
       const d = emp.departments?.name || "Sem setor";
       if (!depts[d]) depts[d] = { name: d, positive: 0, negative: 0 };
-      if (delta >= 0) depts[d].positive++; else depts[d].negative++;
+      if (bank >= 0) depts[d].positive++; else depts[d].negative++;
     }
     return Object.values(depts).sort((a, b) => (b.positive + b.negative) - (a.positive + a.negative));
   }, [empStats]);
@@ -275,7 +297,7 @@ export default function Dashboard() {
             </div>
             <div>
               <p className="text-2xl font-bold text-purple-700">
-                {empStats.filter(s => s.emp.pin_project && s.delta >= 0).length}/{projetos.length}
+                {empStats.filter(s => s.emp.pin_project && s.bank !== null && s.bank >= 0).length}/{projetos.length}
               </p>
               <p className="text-xs font-semibold text-purple-600">Projeto em dia</p>
               <p className="text-[10px] text-purple-500 mt-0.5">PIN — cumpriram horas no mês</p>
@@ -390,7 +412,7 @@ export default function Dashboard() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-muted/40 border-b">
-                  {["Funcionário","Setor","Jornada","Faltas","H.Esperadas","H.Trabalhadas","Δ Saldo","Status"].map(h => (
+                  {["Funcionário","Setor","Jornada","Faltas","H.Esperadas","H.Trabalhadas","Banco de Horas","Status"].map(h => (
                     <th key={h} className="text-left px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -399,8 +421,8 @@ export default function Dashboard() {
                 {[...empStats]
                   .filter(s => !tableSearch || s.emp.name.toLowerCase().includes(tableSearch.toLowerCase()) || (s.emp.departments?.name ?? "").toLowerCase().includes(tableSearch.toLowerCase()))
                   .sort((a, b) => a.emp.name.localeCompare(b.emp.name, "pt-BR"))
-                  .map(({ emp, workedMin, expectedSoFar, delta, pct, absences }, idx) => {
-                  const isOk = delta >= 0;
+                  .map(({ emp, workedMin, expectedSoFar, bank, absences }, idx) => {
+                  const isOk = bank !== null && bank >= 0;
                   return (
                     <tr key={emp.id} className={cn("border-b last:border-0 hover:bg-muted/20 transition-colors", idx % 2 === 1 && "bg-muted/10")}>
                       <td className="px-4 py-3">
@@ -426,15 +448,20 @@ export default function Dashboard() {
                       <td className="px-4 py-3 text-xs font-mono">{toHHMM(expectedSoFar)}</td>
                       <td className="px-4 py-3 text-xs font-mono">{toHHMM(workedMin)}</td>
                       <td className="px-4 py-3">
-                        <span className={cn("text-xs font-mono font-bold", isOk ? "text-emerald-600" : "text-red-600")}>
-                          {isOk ? "+" : ""}{toHHMM(delta)}
-                        </span>
-                        <div className="mt-1 h-1 w-16 rounded-full bg-muted overflow-hidden">
-                          <div className={cn("h-full rounded-full", isOk ? "bg-emerald-500" : "bg-red-500")} style={{ width: Math.min(100, Math.abs(pct)) + "%" }} />
-                        </div>
+                        {bank === null ? (
+                          <span className="text-xs font-mono text-muted-foreground">—</span>
+                        ) : (
+                          <span className={cn("text-xs font-mono font-bold", isOk ? "text-emerald-600" : "text-red-600")}>
+                            {bank >= 0 ? "+" : ""}{toHHMM(bank)}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
-                        {isOk ? (
+                        {bank === null ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground border border-border">
+                            Sem dados
+                          </span>
+                        ) : isOk ? (
                           <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
                             <CheckCircle2 className="w-3 h-3" /> OK
                           </span>
@@ -466,7 +493,7 @@ export default function Dashboard() {
               </div>
             </CardHeader>
             <CardContent className="space-y-2.5">
-              {[...empStats].sort((a, b) => b.delta - a.delta).slice(0, 5).map(({ emp, delta }, i) => (
+              {[...empStats].filter(s => s.bank !== null).sort((a, b) => (b.bank as number) - (a.bank as number)).slice(0, 5).map(({ emp, bank }, i) => (
                 <div key={emp.id} className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] text-muted-foreground w-4">{i + 1}</span>
@@ -475,8 +502,8 @@ export default function Dashboard() {
                     </div>
                     <span className="text-xs font-medium truncate max-w-[160px]">{emp.name}</span>
                   </div>
-                  <span className={cn("text-xs font-mono font-bold", delta >= 0 ? "text-emerald-600" : "text-red-600")}>
-                    {delta >= 0 ? "+" : ""}{toHHMM(delta)}
+                  <span className={cn("text-xs font-mono font-bold", (bank as number) >= 0 ? "text-emerald-600" : "text-red-600")}>
+                    {(bank as number) >= 0 ? "+" : ""}{toHHMM(bank as number)}
                   </span>
                 </div>
               ))}
